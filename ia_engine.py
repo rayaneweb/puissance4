@@ -3,7 +3,7 @@
 
 import random
 import os
-import pickle
+import joblib
 from typing import Optional
 
 EMPTY = "."
@@ -11,7 +11,27 @@ RED = "R"
 YELLOW = "Y"
 CONNECT_N = 4
 
-MODEL_PATH = os.path.join(os.path.dirname(__file__), "ia_model.pkl")
+# Chemins du modèle — cherche dans plusieurs endroits au démarrage
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _find_file(filename):
+    candidates = [
+        os.path.join(_BASE_DIR, filename),  # racine (ia_engine.py est à la racine)
+        os.path.join(_BASE_DIR, "desktop", filename),  # desktop/
+        os.path.join(os.path.dirname(_BASE_DIR), filename),  # parent de ia_engine
+        os.path.join(os.getcwd(), filename),  # cwd
+        os.path.join(os.getcwd(), "desktop", filename),  # cwd/desktop
+        os.path.join(os.path.dirname(os.getcwd()), filename),  # parent du cwd
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return os.path.join(_BASE_DIR, filename)
+
+
+MODEL_PATH = _find_file("connect4_policy_9x9.pkl")
+SCALER_PATH = _find_file("connect4_policy_9x9_scaler.pkl")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -274,9 +294,10 @@ def best_move(board: list, player: str, depth: int, ai_mode: str) -> dict:
         return {"col": random.choice(cols), "scores": {}}
 
     if ai_mode == "trained":
-        model = _load_trained_model()
-        if model is not None:
-            return _trained_best_move(board, player, cols, model)
+        model, scaler = _load_trained_model()
+        if model is not None and scaler is not None:
+            return _trained_best_move(board, player, cols, model, scaler)
+        # Fallback minimax si modèle absent
         ai_mode = "minimax"
 
     # ── minimax ──────────────────────────────────────────────
@@ -319,49 +340,101 @@ def best_move(board: list, player: str, depth: int, ai_mode: str) -> dict:
     return {"col": best_col, "scores": scores}
 
 
+def extract_features(board: list, player: str) -> list:
+    """
+    Features à 3 canaux — identique à board_to_features() de train_policy.py :
+      canal 1 : cases du joueur courant  (1 ou 0)
+      canal 2 : cases de l'adversaire    (1 ou 0)
+      canal 3 : cases vides              (1 ou 0)
+    Taille : rows × cols × 3
+    """
+    opp = other(player)
+    current_ch, opponent_ch, empty_ch = [], [], []
+    for row in board:
+        for cell in row:
+            current_ch.append(1 if cell == player else 0)
+            opponent_ch.append(1 if cell == opp else 0)
+            empty_ch.append(1 if cell == EMPTY else 0)
+    return current_ch + opponent_ch + empty_ch
+
+
 # ══════════════════════════════════════════════════════════════
 # MODÈLE ENTRAÎNÉ
 # ══════════════════════════════════════════════════════════════
 
 _cached_model = None
+_cached_scaler = None
 
 
 def _load_trained_model():
-    global _cached_model
+    global _cached_model, _cached_scaler
     if _cached_model is not None:
-        return _cached_model
-    if os.path.exists(MODEL_PATH):
+        return _cached_model, _cached_scaler
+
+    if os.path.exists(MODEL_PATH) and os.path.exists(SCALER_PATH):
         try:
-            with open(MODEL_PATH, "rb") as f:
-                _cached_model = pickle.load(f)
+            _cached_model = joblib.load(MODEL_PATH)
+            _cached_scaler = joblib.load(SCALER_PATH)
             print(f"[ia_engine] Modèle chargé : {MODEL_PATH}")
-            return _cached_model
+            return _cached_model, _cached_scaler
         except Exception as e:
             print(f"[ia_engine] Erreur chargement modèle : {e}")
-    return None
+
+    return None, None
 
 
-def _trained_best_move(board: list, player: str, cols: list, model) -> dict:
-    """Placeholder — à compléter quand le modèle sera entraîné."""
-    return best_move(board, player, depth=4, ai_mode="minimax")
+def _trained_best_move(board: list, player: str, cols: list, model, scaler) -> dict:
+    """
+    Utilise le modèle MLP + scaler pour choisir le meilleur coup.
+    - Prédit les probabilités pour chaque colonne
+    - Filtre les colonnes invalides
+    - Retourne la colonne avec la plus haute probabilité valide
+    """
+    import numpy as np
 
+    features = extract_features(board, player)
 
-def extract_features(board: list, player: str) -> list:
-    """Features : 1=joueur, -1=adversaire, 0=vide."""
-    opp = other(player)
-    features = []
-    for row in board:
-        for cell in row:
-            if cell == player:
-                features.append(1)
-            elif cell == opp:
-                features.append(-1)
-            else:
-                features.append(0)
-    return features
+    # Vérifier que la taille des features correspond au scaler
+    expected = scaler.n_features_in_
+    if len(features) != expected:
+        print(
+            f"[ia_engine] ⚠️  Grille {len(board)}x{len(board[0])} incompatible avec le modèle ({expected} features attendues) — fallback minimax"
+        )
+        return best_move(board, player, depth=4, ai_mode="minimax")
+
+    X = np.array([features], dtype=np.float32)
+    X_scaled = scaler.transform(X)
+
+    # predict_proba donne la proba pour chaque colonne (classes = 0..cols-1)
+    proba = model.predict_proba(X_scaled)[0]
+    classes = list(model.classes_)
+
+    # Choisir la colonne valide avec la plus haute proba
+    best_col = None
+    best_prob = -1.0
+    col_scores = {}
+
+    for col in cols:
+        if col in classes:
+            idx = classes.index(col)
+            p = float(proba[idx])
+        else:
+            p = 0.0
+        col_scores[col] = round(p, 4)
+        if p > best_prob:
+            best_prob = p
+            best_col = col
+
+    # Fallback si aucune colonne reconnue
+    if best_col is None:
+        best_col = cols[len(cols) // 2]
+
+    return {"col": best_col, "scores": col_scores}
 
 
 def reload_model():
-    global _cached_model
+    global _cached_model, _cached_scaler
     _cached_model = None
-    return _load_trained_model() is not None
+    _cached_scaler = None
+    m, s = _load_trained_model()
+    return m is not None

@@ -798,10 +798,13 @@ class Connect4App(tk.Tk):
     def _reload_ia(self):
         ok = reload_model()
         if ok:
-            messagebox.showinfo("IA", "Modèle entraîné rechargé depuis ia_model.pkl")
+            messagebox.showinfo(
+                "IA", "Modèle entraîné rechargé depuis connect4_policy_9x9.pkl"
+            )
         else:
             messagebox.showinfo(
-                "IA", "Aucun modèle ia_model.pkl trouvé — minimax utilisé"
+                "IA",
+                "Aucun modèle trouvé (connect4_policy_9x9.pkl) — minimax utilisé\n\nLance train_policy.py pour entraîner le modèle.",
             )
 
     # ── save/load flows ──────────────────────────────────────

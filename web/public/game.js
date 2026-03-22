@@ -251,7 +251,6 @@ class Connect4Web {
       saveMenu: document.getElementById("saveMenu"),
       loadMenu: document.getElementById("loadMenu"),
       loadJson: document.getElementById("loadJson"),
-      bgaImport: document.getElementById("bgaImport"),
 
       newGame: document.getElementById("newGame"),
       stop: document.getElementById("stop"),
@@ -799,7 +798,6 @@ class Connect4Web {
     });
 
     this.el.loadJson.addEventListener("change", (e) => this.loadJsonFlow(e));
-    this.el.bgaImport.addEventListener("click", () => this.bgaImportFlow());
     this.el.clearHistoryBtn.addEventListener("click", () => this.clearHistory());
 
     // Replay
@@ -2272,186 +2270,9 @@ class Connect4Web {
       alert("❌ Chargement BD impossible : " + (e?.message || e));
     }
   }
-  // ══════════════════════════════════════════════════════════════
-  // BGA IMPORT
-  // ══════════════════════════════════════════════════════════════
-
-  async bgaImportFlow() {
-    if (this.online.enabled) {
-      alert("Online: import BGA désactivé (quitte Online d'abord).");
-      return;
-    }
-
-    // ── Modale de saisie ──
-    const tableId = await this._bgaPromptModal();
-    if (!tableId) return;
-
-    // ── Accepter : URL complète ou juste l'ID ──
-    const idMatch = tableId.match(/(\d{6,12})/);
-    if (!idMatch) {
-      alert("❌ Numéro de table BGA introuvable dans la saisie.");
-      return;
-    }
-    const tid = idMatch[1];
-
-    let res;
-    try {
-      this.el.bgaImport.disabled = true;
-      this.el.bgaImport.textContent = "⏳ Import…";
-      res = await this.apiFetch("/bga/import", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ table_id: tid }),
-      });
-    } catch (e) {
-      alert("❌ Import BGA échoué : " + (e?.message || e));
-      return;
-    } finally {
-      this.el.bgaImport.disabled = false;
-      this.el.bgaImport.innerHTML = '<span class="btn-icon">🎲</span> Importer BGA';
-    }
-
-    // ── Normaliser les moves ──
-    // Le backend renvoie soit un tableau d'entiers (0-indexés)
-    // soit un tableau d'objets {move_id, col, player_id, player_name} (1-indexés depuis BGA)
-    let rawMoves = res.moves ?? [];
-    let playerRed = null;
-    let playerYellow = null;
-
-    if (rawMoves.length > 0 && typeof rawMoves[0] === "object") {
-      // Format BGA brut : détecter les deux joueurs (ordre d'apparition = rouge puis jaune)
-      const playerOrder = [];
-      for (const m of rawMoves) {
-        if (!playerOrder.includes(m.player_id)) {
-          playerOrder.push(m.player_id);
-          if (playerOrder.length === 2) break;
-        }
-      }
-      const playerNames = {};
-      for (const m of rawMoves) {
-        playerNames[m.player_id] = m.player_name;
-      }
-      playerRed    = playerNames[playerOrder[0]] ?? "Joueur 1";
-      playerYellow = playerNames[playerOrder[1]] ?? "Joueur 2";
-
-      // Convertir en entiers 0-indexés
-      rawMoves = rawMoves.map((m) => {
-        const c = Number(m.col);
-        // BGA utilise des colonnes 1-indexées
-        return c >= 1 ? c - 1 : c;
-      });
-    }
-
-    const rows = Number(res.rows ?? 9);
-    const cols = Number(res.cols ?? 9);
-
-    // Clamp colonnes au nombre réel de colonnes de la grille
-    const moves = rawMoves.map((c) => Math.max(0, Math.min(cols - 1, c)));
-
-    const payload = {
-      save_name: `BGA_${tid}`,
-      rows,
-      cols,
-      starting_color: "R",
-      mode: 2,
-      game_index: 1,
-      moves,
-      view_index: moves.length,
-      ai_mode: "random",
-      ai_depth: 4,
-      player_red: playerRed,
-      player_yellow: playerYellow,
-    };
-
-    try {
-      this.applyLoadedPayload(payload);
-    } catch (e) {
-      alert("❌ Impossible d'afficher la partie : " + (e?.message || e));
-      return;
-    }
-
-    const cached = res.cached ? " (déjà en cache)" : "";
-    alert(
-      `✅ Partie BGA #${tid} importée${cached} !\n` +
-      `${rows}×${cols} · ${moves.length} coups\n` +
-      (playerRed ? `🔴 ${playerRed}  🟡 ${playerYellow}` : "")
-    );
-
-    this.pushHistory({
-      player: "system",
-      type: "load",
-      game: this.gameIndex,
-      move: moves.length,
-      col: `BGA_${tid}`,
-      when: Date.now(),
-    });
-    this.renderHistory();
-  }
-
-  /** Modale stylisée pour saisir l'ID de table BGA */
-  _bgaPromptModal() {
-    return new Promise((resolve) => {
-      const overlay = document.createElement("div");
-      Object.assign(overlay.style, {
-        position: "fixed", inset: "0",
-        background: "rgba(0,0,0,0.6)",
-        display: "flex", alignItems: "center", justifyContent: "center",
-        zIndex: "99999",
-      });
-
-      const modal = document.createElement("div");
-      Object.assign(modal.style, {
-        width: "min(480px, 92vw)",
-        background: "#1c1338",
-        border: "1px solid rgba(255,255,255,0.12)",
-        borderRadius: "16px",
-        boxShadow: "0 20px 60px rgba(0,0,0,0.5)",
-        color: "#fff",
-        padding: "24px",
-        fontFamily: "DM Sans, Arial, sans-serif",
-      });
-
-      modal.innerHTML = `
-        <div style="font-size:20px;font-weight:700;margin-bottom:6px;">🎲 Importer depuis Board Game Arena</div>
-        <div style="font-size:13px;color:rgba(255,255,255,0.55);margin-bottom:16px;">
-          Colle l'URL complète de la partie ou juste le numéro de table.<br>
-          Exemple : <code style="color:#a78bfa">https://boardgamearena.com/gamereview?table=816906937</code>
-        </div>
-        <input id="_bgaInput" type="text" placeholder="URL ou ID de table (ex: 816906937)"
-          style="width:100%;box-sizing:border-box;padding:12px 14px;border-radius:10px;
-                 border:1px solid rgba(255,255,255,0.18);background:#120b29;
-                 color:#fff;font-size:15px;outline:none;margin-bottom:16px;" />
-        <div style="display:flex;justify-content:flex-end;gap:10px;">
-          <button id="_bgaCancel" style="padding:10px 18px;border-radius:10px;
-            border:1px solid rgba(255,255,255,0.15);background:#2a214a;color:#fff;cursor:pointer;">
-            Annuler
-          </button>
-          <button id="_bgaOk" style="padding:10px 18px;border-radius:10px;
-            border:none;background:#7c52e8;color:#fff;font-weight:700;cursor:pointer;">
-            Importer
-          </button>
-        </div>
-      `;
-
-      overlay.appendChild(modal);
-      document.body.appendChild(overlay);
-
-      const input = modal.querySelector("#_bgaInput");
-      const ok    = modal.querySelector("#_bgaOk");
-      const cancel = modal.querySelector("#_bgaCancel");
-
-      const close = (val) => { document.body.removeChild(overlay); resolve(val); };
-
-      ok.addEventListener("click", () => close(input.value.trim() || null));
-      cancel.addEventListener("click", () => close(null));
-      overlay.addEventListener("click", (e) => { if (e.target === overlay) close(null); });
-      input.addEventListener("keydown", (e) => { if (e.key === "Enter") close(input.value.trim() || null); });
-
-      setTimeout(() => input.focus(), 50);
-    });
-  }
-
 }
+
+// BOOT
 window.addEventListener("DOMContentLoaded", () => {
   const app = new Connect4Web();
   requestAnimationFrame(() => requestAnimationFrame(() => app.resizeCanvasReliable()));

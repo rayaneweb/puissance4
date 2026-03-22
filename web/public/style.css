@@ -394,8 +394,6 @@ button:disabled, .btn:disabled { opacity: .38; cursor: not-allowed; transform: n
 .btn--online-sec { background: linear-gradient(135deg, rgba(185,28,28,0.3), rgba(229,48,48,0.15)); border-color: rgba(229,48,48,0.35); }
 .btn--ghost-sm   { background: transparent; border-color: transparent; font-size: 11px; height: 28px; padding: 0 10px; color: var(--ink-dim); }
 .btn--ghost-sm:hover { background: var(--s2); border-color: var(--b1); color: var(--ink); }
-.btn--bga { background: linear-gradient(135deg, rgba(16,110,70,0.45), rgba(22,163,74,0.2)); border-color: rgba(22,163,74,0.5); color: #4ade80; }
-.btn--bga:hover { background: linear-gradient(135deg, rgba(22,163,74,0.5), rgba(16,110,70,0.3)); border-color: #4ade80; }
 .btn--danger-sm  { background: transparent; border-color: rgba(185,28,28,0.25); color: var(--r300); font-size: 11px; height: 28px; padding: 0 10px; }
 .btn--danger-sm:hover { background: rgba(185,28,28,0.15); border-color: var(--r400); }
 

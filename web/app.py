@@ -425,13 +425,6 @@ def game_position(req: dict):
 
 class BGAReq(BaseModel):
     table_id: str
-    moves: Optional[List[dict]] = (
-        None  # moves bruts BGA [{move_id, col, player_id, player_name}]
-    )
-    player_red: Optional[str] = None
-    player_yellow: Optional[str] = None
-    rows: Optional[int] = None
-    cols: Optional[int] = None
 
 
 @app.post("/api/bga/import")
@@ -440,11 +433,10 @@ def bga_import(req: BGAReq):
     if not tid.isdigit():
         raise HTTPException(400, "Numéro invalide")
 
-    # ── Vérifier cache ──
     with db_conn() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
-                "SELECT game_id, rows_count, cols_count, moves, player_red, player_yellow FROM saved_games WHERE save_name=%s LIMIT 1",
+                "SELECT game_id, rows_count, cols_count, moves FROM saved_games WHERE save_name=%s LIMIT 1",
                 (f"BGA_{tid}",),
             )
             existing = cur.fetchone()
@@ -460,83 +452,44 @@ def bga_import(req: BGAReq):
             "rows": existing["rows_count"],
             "cols": existing["cols_count"],
             "moves": moves,
-            "player_red": existing.get("player_red"),
-            "player_yellow": existing.get("player_yellow"),
             "cached": True,
         }
 
-    # ── Moves fournis directement (JSON BGA brut) ──
-    if req.moves:
-        raw = req.moves
-        # Détecter joueurs si non fournis
-        player_red = req.player_red
-        player_yellow = req.player_yellow
-        if not player_red or not player_yellow:
-            order = []
-            names = {}
-            for m in raw:
-                pid = str(m.get("player_id", ""))
-                if pid and pid not in order:
-                    order.append(pid)
-                    names[pid] = m.get("player_name", pid)
-                if len(order) == 2:
-                    break
-            if len(order) >= 1 and not player_red:
-                player_red = names.get(order[0])
-            if len(order) >= 2 and not player_yellow:
-                player_yellow = names.get(order[1])
+    try:
+        rq = _req2.Request(
+            f"https://boardgamearena.com/gamereview?table={tid}",
+            headers={"User-Agent": "Mozilla/5.0 (compatible; P4Bot/1.0)"},
+        )
+        with _req2.urlopen(rq, timeout=15) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        raise HTTPException(502, f"Impossible de contacter BGA : {e}")
 
-        # Convertir en entiers 0-indexés
-        raw_cols = [int(m["col"]) for m in raw if "col" in m]
-        if raw_cols and min(raw_cols) >= 1:
-            raw_cols = [c - 1 for c in raw_cols]
+    moves = []
+    for pat in (
+        _re.compile(r"place[rz]?\s+un\s+pion\s+dans\s+la\s+colonne\s+(\d+)", _re.I),
+        _re.compile(
+            r"(?:drops?\s+(?:a\s+)?(?:piece|token|disc)\s+(?:in(?:to)?\s+)?(?:column\s+)?|column\s+)(\d+)",
+            _re.I,
+        ),
+    ):
+        found = [int(m.group(1)) for m in pat.finditer(html)]
+        if found:
+            moves = found
+            break
 
-        rows = req.rows or 9
-        cols = req.cols or 9
-        # Déduire cols_count depuis le max de colonne joué
-        if raw_cols:
-            cols = max(cols, max(raw_cols) + 1)
-        moves = [max(0, min(cols - 1, c)) for c in raw_cols]
+    if not moves:
+        raise HTTPException(404, "Aucun coup trouvé — partie privée ?")
 
-    else:
-        # ── Scraping BGA ──
-        player_red = req.player_red
-        player_yellow = req.player_yellow
-        try:
-            rq = _req2.Request(
-                f"https://boardgamearena.com/gamereview?table={tid}",
-                headers={"User-Agent": "Mozilla/5.0 (compatible; P4Bot/1.0)"},
-            )
-            with _req2.urlopen(rq, timeout=15) as resp:
-                html = resp.read().decode("utf-8", errors="replace")
-        except Exception as e:
-            raise HTTPException(502, f"Impossible de contacter BGA : {e}")
+    if min(moves) >= 1 and max(moves) <= 20:
+        moves = [c - 1 for c in moves]
 
-        moves = []
-        for pat in (
-            _re.compile(r"place[rz]?\s+un\s+pion\s+dans\s+la\s+colonne\s+(\d+)", _re.I),
-            _re.compile(
-                r"(?:drops?\s+(?:a\s+)?(?:piece|token|disc)\s+(?:in(?:to)?\s+)?(?:column\s+)?|column\s+)(\d+)",
-                _re.I,
-            ),
-        ):
-            found = [int(m.group(1)) for m in pat.finditer(html)]
-            if found:
-                moves = found
-                break
-
-        if not moves:
-            raise HTTPException(404, "Aucun coup trouvé — partie privée ?")
-
-        if min(moves) >= 1 and max(moves) <= 20:
-            moves = [c - 1 for c in moves]
-
-        rows, cols = 9, 9
-        sm = _re.search(r"(\d{1,2})\s*[x×]\s*(\d{1,2})", html, _re.I)
-        if sm:
-            rr, cc = int(sm.group(1)), int(sm.group(2))
-            if 4 <= rr <= 20 and 4 <= cc <= 20:
-                rows, cols = rr, cc
+    rows, cols = 9, 9
+    sm = _re.search(r"(\d{1,2})\s*[x×]\s*(\d{1,2})", html, _re.I)
+    if sm:
+        rr, cc = int(sm.group(1)), int(sm.group(2))
+        if 4 <= rr <= 20 and 4 <= cc <= 20:
+            rows, cols = rr, cc
 
     with db_conn() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -546,9 +499,9 @@ def bga_import(req: BGAReq):
                 (
                     save_name, rows_count, cols_count, starting_color,
                     ai_mode, ai_depth, game_mode, status, view_index,
-                    moves, distinct_cols, player_red, player_yellow
+                    moves, distinct_cols
                 )
-                VALUES (%s,%s,%s,'R','bga',4,2,'completed',%s,%s,%s,%s,%s)
+                VALUES (%s,%s,%s,'R','bga',4,2,'completed',%s,%s,%s)
                 RETURNING game_id
                 """,
                 (
@@ -558,8 +511,6 @@ def bga_import(req: BGAReq):
                     len(moves),
                     json.dumps(moves),
                     len(set(moves)),
-                    player_red,
-                    player_yellow,
                 ),
             )
             gid = cur.fetchone()["game_id"]
@@ -570,8 +521,6 @@ def bga_import(req: BGAReq):
         "rows": rows,
         "cols": cols,
         "moves": moves,
-        "player_red": player_red,
-        "player_yellow": player_yellow,
         "cached": False,
     }
 
