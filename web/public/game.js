@@ -1064,10 +1064,10 @@ class Connect4Web {
     if (!this.lastDrawGeom) return null;
     const wrapRect = this.el.canvasWrap.getBoundingClientRect();
     const x = clientX - wrapRect.left;
-    const y = clientY - wrapRect.top;
 
-    const { x0, y0, cell, boardW, boardH } = this.lastDrawGeom;
-    if (x < x0 || x > x0 + boardW || y < y0 || y > y0 + boardH) return null;
+    const { x0, boardW, cell } = this.lastDrawGeom;
+    // Accepte le clic sur toute la hauteur du canvas, juste vérifier la colonne
+    if (x < x0 || x > x0 + boardW) return null;
 
     const col = Math.floor((x - x0) / cell);
     if (col < 0 || col >= this.cols) return null;
