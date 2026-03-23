@@ -1403,6 +1403,35 @@ class Connect4Web {
 
     return count;
   }
+  // Évalue une fenêtre de 4 cellules pour le score heuristique
+  evaluateWindow(window, aiPlayer, humanPlayer) {
+    let aiCount = 0, humanCount = 0, emptyCount = 0;
+    for (const cell of window) {
+      if (cell === aiPlayer) aiCount++;
+      else if (cell === humanPlayer) humanCount++;
+      else emptyCount++;
+    }
+
+    // Fenêtre mixte → inutile
+    if (aiCount > 0 && humanCount > 0) return 0;
+
+    // Victoire / défaite immédiate (normalement gérée avant, mais sécurité)
+    if (aiCount === 4) return 1000000;
+    if (humanCount === 4) return -1000000;
+
+    // Positif : menaces IA
+    if (aiCount === 3 && emptyCount === 1) return 150;
+    if (aiCount === 2 && emptyCount === 2) return 20;
+    if (aiCount === 1 && emptyCount === 3) return 2;
+
+    // Négatif : menaces adversaire
+    if (humanCount === 3 && emptyCount === 1) return -180;
+    if (humanCount === 2 && emptyCount === 2) return -25;
+    if (humanCount === 1 && emptyCount === 3) return -2;
+
+    return 0;
+  }
+
   heuristicScore(grid, aiPlayer, humanPlayer) {
     let score = 0;
     const centerCol = Math.floor(this.cols / 2);
