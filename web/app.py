@@ -792,9 +792,61 @@ def online_move(code: str, req: MoveReq):
     return {"ok": True, "next_turn": next_turn}
 
 
-# ══════════════════════════════════════════════════════════════
-# STATIC FILES
-# ══════════════════════════════════════════════════════════════
+class RematchReq(BaseModel):
+    player_secret: str = Field(min_length=10, max_length=200)
+
+
+@app.post("/api/online/{code}/rematch")
+def online_rematch(code: str, req: RematchReq):
+    """Reset an existing online game so both players can play again in the same room."""
+    code = code.strip().upper()
+
+    with db_conn() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # Verify the game exists
+            cur.execute("SELECT * FROM online_games WHERE code=%s FOR UPDATE", (code,))
+            g = cur.fetchone()
+            if not g:
+                raise HTTPException(404, "Partie introuvable")
+
+            # Verify the requester is a registered player (not spectator)
+            cur.execute(
+                "SELECT * FROM online_players WHERE game_id=%s AND secret=%s",
+                (g["id"], req.player_secret),
+            )
+            p = cur.fetchone()
+            if not p:
+                raise HTTPException(401, "Joueur non reconnu")
+            if p["token"] not in (RED, YELLOW):
+                raise HTTPException(403, "Spectateur ne peut pas relancer")
+
+            # Only allow rematch when game is finished (or aborted)
+            if g["status"] not in ("finished", "aborted", "waiting"):
+                raise HTTPException(409, "La partie est encore en cours")
+
+            # Swap starting color for fairness (loser starts, or just swap)
+            new_start = YELLOW if g["starting_color"] == RED else RED
+
+            # Reset the game state
+            cur.execute(
+                """
+                UPDATE online_games
+                SET status='playing',
+                    winner=NULL,
+                    current_turn=%s,
+                    starting_color=%s
+                WHERE id=%s
+                """,
+                (new_start, new_start, g["id"]),
+            )
+
+            # Delete all previous moves
+            cur.execute("DELETE FROM online_moves WHERE game_id=%s", (g["id"],))
+
+        conn.commit()
+
+    return {"ok": True, "new_starting_color": new_start}
+
 
 PUBLIC_DIR = os.path.join(BASE_DIR, "public")
 if os.path.isdir(PUBLIC_DIR):

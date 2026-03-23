@@ -220,6 +220,10 @@ class Connect4Web {
       token: null, // "R" | "Y" | "S"
       pollId: null,
       lastMovesLen: 0,
+      players: [],       // [{token, player_name}]
+      spectators: 0,
+      rematchInFlight: false,
+      lastStatus: null,
     };
 
     // Hover
@@ -247,6 +251,8 @@ class Connect4Web {
       onlineLeave: document.getElementById("onlineLeave"),
       onlineBadge: document.getElementById("onlineBadge"),
       onlineCopyLink: document.getElementById("onlineCopyLink"),
+      onlineRematch: document.getElementById("onlineRematch"),
+      spectatorsInfo: document.getElementById("spectatorsInfo"),
 
       saveMenu: document.getElementById("saveMenu"),
       loadMenu: document.getElementById("loadMenu"),
@@ -320,7 +326,7 @@ class Connect4Web {
 
   // ===== CONFIG
   loadConfig() {
-    return { rows: 8, cols: 9, starting_color: "R" };
+    return { rows: 9, cols: 9, starting_color: "R" };
   }
 
   // ===== HELPERS
@@ -439,6 +445,9 @@ class Connect4Web {
     this.online.code = null;
     this.online.secret = null;
     this.online.token = null;
+    this.online.players = [];
+    this.online.spectators = 0;
+    this.online.lastStatus = null;
     localStorage.removeItem(this.LS_ONLINE_CODE);
     localStorage.removeItem(this.LS_ONLINE_SECRET);
     localStorage.removeItem(this.LS_ONLINE_TOKEN);
@@ -517,6 +526,31 @@ class Connect4Web {
     this.setOnlineEnabled(false);
     this.onlineClearSession();
     this.setOnlineBadge("Offline");
+    this._updateSpectatorsDisplay(0);
+  }
+
+  async onlineRematchFlow() {
+    if (!this.online.enabled || !this.online.code) return;
+    if (this.online.rematchInFlight) return;
+
+    this.online.rematchInFlight = true;
+    if (this.el.onlineRematch) this.el.onlineRematch.disabled = true;
+    if (this.el.newGame) this.el.newGame.disabled = true;
+
+    try {
+      await this.apiFetch(`/online/${this.online.code}/rematch`, {
+        method: "POST",
+        body: JSON.stringify({ player_secret: this.online.secret }),
+      });
+      // Board is reset server-side; next poll will sync state
+      this.resetLocalBoardOnly();
+    } catch (e) {
+      alert("❌ Relance impossible : " + (e?.message || e));
+    } finally {
+      this.online.rematchInFlight = false;
+      if (this.el.onlineRematch) this.el.onlineRematch.disabled = false;
+      if (this.el.newGame) this.el.newGame.disabled = false;
+    }
   }
 
   async onlinePlay(col) {
@@ -547,6 +581,31 @@ class Connect4Web {
     this.resizeCanvasReliable();
   }
 
+  // Helper: update spectators display element
+  _updateSpectatorsDisplay(count) {
+    this.online.spectators = typeof count === "number" ? count : 0;
+    if (this.el.spectatorsInfo) {
+      this.el.spectatorsInfo.textContent = `👁 ${this.online.spectators} spec.`;
+    }
+  }
+
+  // Helper: sync nameR/nameY from online players list
+  _syncOnlinePlayerNames() {
+    if (!this.online.enabled || !Array.isArray(this.online.players)) return;
+    for (const p of this.online.players) {
+      if (!p || !p.player_name) continue;
+      const name = String(p.player_name).trim();
+      if (!name) continue;
+      if (p.token === this.RED) {
+        this.setNameForToken(this.RED, name);
+        if (this.el.nameR) this.el.nameR.textContent = name;
+      } else if (p.token === this.YELLOW) {
+        this.setNameForToken(this.YELLOW, name);
+        if (this.el.nameY) this.el.nameY.textContent = name;
+      }
+    }
+  }
+
   applyOnlineState(st) {
     const movesArr = Array.isArray(st.moves) ? st.moves : [];
     const cols = movesArr
@@ -572,28 +631,78 @@ class Connect4Web {
 
     this.current = st.current_turn === this.YELLOW ? this.YELLOW : this.RED;
 
+    // Sync players list + names displayed
+    this.online.players = Array.isArray(st.players) ? st.players : [];
+    this._syncOnlinePlayerNames();
+
+    // Spectators count
+    const specCount = this.online.players.filter((p) => p?.token === "S").length;
+    this._updateSpectatorsDisplay(specCount);
+
+    // Game over state
+    const wasOver = this.gameOver;
     this.gameOver = st.status === "finished" || st.winner !== null;
     if (st.winner === "R") this.winner = this.RED;
     else if (st.winner === "Y") this.winner = this.YELLOW;
     else if (st.winner === "D") this.winner = null;
     else this.winner = null;
 
-    if (this.online.enabled && this.online.code) {
-      const t = this.online.token || "?";
-      this.setOnlineBadge(`Online #${this.online.code} (${t})`);
+    // Compute winning cells when game just ended
+    if (this.gameOver && this.winner) {
+      this.winningCells = this._computeWinCellsFromMoves();
+    } else {
+      this.winningCells = [];
     }
 
-    this.winningCells = [];
+    // Badge: show code, token, spectators
+    if (this.online.code) {
+      const t = this.online.token || "?";
+      this.setOnlineBadge(`🌐 #${this.online.code} (${t}) • 👁${specCount}`);
+    }
+
+    // Show/hide rematch button (only visible when game is finished)
+    if (this.el.onlineRematch) {
+      this.el.onlineRematch.style.display = this.gameOver ? "" : "none";
+    }
+
+    // Track status for rematch detection (reset local board if server reset)
+    if (this.online.lastStatus === "finished" && st.status !== "finished") {
+      this.resetLocalBoardOnly();
+      this.online.lastStatus = st.status;
+      return;
+    }
+    this.online.lastStatus = st.status;
+
     this.drawBoard();
     this.updateReplayUI();
     this.updateStatus();
     this.updateSidePanel();
-
     this.setButtonsState(true);
+  }
+
+  // Recompute winning cells by replaying this.moves on a fresh board
+  _computeWinCellsFromMoves() {
+    const b = this.createBoard();
+    let lastPos = null;
+    let lastToken = null;
+    for (let i = 0; i < this.moves.length; i++) {
+      const col = this.moves[i];
+      const token = this.tokenForMoveIndex(i);
+      const pos = this.dropToken(b, col, token);
+      if (!pos) break;
+      lastPos = pos;
+      lastToken = token;
+    }
+    if (!lastPos || !lastToken) return [];
+    return this.checkWinCells(b, lastPos[0], lastPos[1], lastToken);
   }
 
   // ===== NOMS
   getNameForToken(token) {
+    if (this.online.enabled && Array.isArray(this.online.players)) {
+      const p = this.online.players.find((x) => x?.token === token);
+      if (p?.player_name?.trim()) return p.player_name.trim();
+    }
     if (token === this.RED) return localStorage.getItem(this.LS_NAME_R) || "Joueur Rouge";
     return localStorage.getItem(this.LS_NAME_Y) || "Joueur Jaune";
   }
@@ -737,7 +846,13 @@ class Connect4Web {
 
   // ===== UI
   bindUI() {
-    this.el.newGame.addEventListener("click", () => this.resetGame(true));
+    this.el.newGame.addEventListener("click", () => {
+      if (this.online.enabled) {
+        this.onlineRematchFlow();
+      } else {
+        this.resetGame(true);
+      }
+    });
     this.el.stop.addEventListener("click", () => this.stopGame());
 
     this.el.mode.addEventListener("change", () => {
@@ -854,6 +969,10 @@ class Connect4Web {
           prompt("Copie le lien :", url);
         }
       });
+    }
+
+    if (this.el.onlineRematch) {
+      this.el.onlineRematch.addEventListener("click", () => this.onlineRematchFlow());
     }
   }
 
