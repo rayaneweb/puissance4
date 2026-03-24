@@ -374,7 +374,7 @@ class Connect4Web {
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify({
     board: board,
-    player: currentPlayer,
+    player: this.current,
     depth: aiDepth
   })
 });
