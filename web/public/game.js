@@ -16,11 +16,11 @@ class Connect4Web {
   LS_HISTORY = "c4_history";
   HISTORY_LIMIT = 120;
 
-  // ===== ONLINE (multijoueur)
   LS_ONLINE_CODE = "c4_online_code";
   LS_ONLINE_SECRET = "c4_online_secret";
   LS_ONLINE_TOKEN = "c4_online_token";
   LS_ONLINE_NAME = "c4_online_name";
+
   showDbLoadDialog(list) {
     return new Promise((resolve) => {
       const overlay = document.createElement("div");
@@ -146,21 +146,17 @@ class Connect4Web {
       };
 
       search.addEventListener("input", () => renderOptions(search.value));
-
       btnCancel.addEventListener("click", () => close(null));
-
       btnLoad.addEventListener("click", () => {
         const val = select.value ? parseInt(select.value, 10) : null;
         if (!val) return;
         close(val);
       });
-
       select.addEventListener("dblclick", () => {
         const val = select.value ? parseInt(select.value, 10) : null;
         if (!val) return;
         close(val);
       });
-
       overlay.addEventListener("click", (e) => {
         if (e.target === overlay) close(null);
       });
@@ -192,6 +188,7 @@ class Connect4Web {
       search.focus();
     });
   }
+
   constructor() {
     const cfg = this.loadConfig();
     this.rows = cfg.rows;
@@ -207,43 +204,40 @@ class Connect4Web {
     this.moves = [];
     this.viewIndex = 0;
 
-    // ✅ FIX minimax multi-coups
     this.robotThinking = false;
     this.aiLock = false;
     this.pendingTimers = new Set();
 
-    // Online state
     this.online = {
       enabled: false,
       code: null,
       secret: null,
-      token: null, // "R" | "Y" | "S"
+      token: null,
       pollId: null,
       lastMovesLen: 0,
-      players: [],       // [{token, player_name}]
+      players: [],
       spectators: 0,
       rematchInFlight: false,
       lastStatus: null,
     };
 
-    // Hover
     this.lastDrawGeom = null;
     this.hoverCol = null;
 
-    // DOM
     this.el = {
       mode: document.getElementById("mode"),
       aiMode: document.getElementById("aiMode"),
       depth: document.getElementById("depth"),
       noDigits: document.getElementById("noDigits"),
       saveName: document.getElementById("saveName"),
+      analyzeBtn: document.getElementById("analyzeBtn"),
+      prediction: document.getElementById("prediction"),
 
       nameR: document.getElementById("nameR"),
       nameY: document.getElementById("nameY"),
       changeR: document.getElementById("changeR"),
       changeY: document.getElementById("changeY"),
 
-      // Online
       onlineName: document.getElementById("onlineName"),
       onlineCode: document.getElementById("onlineCode"),
       onlineCreate: document.getElementById("onlineCreate"),
@@ -294,16 +288,10 @@ class Connect4Web {
     this.bindUI();
     this.ensurePlayerNames();
     this.ensureDefaultSaveName();
-
-    // Log + render history
     this.renderHistory();
-
     this.resetGame(false);
-
-    // ✅ Responsive canvas (PC + mobile)
     this.setupResponsiveCanvas();
 
-    // ✅ ONLINE: restore session or join via URL
     this.setOnlineBadge("Offline");
 
     if (this.el.onlineName) {
@@ -324,12 +312,10 @@ class Connect4Web {
     }
   }
 
-  // ===== CONFIG
   loadConfig() {
     return { rows: 9, cols: 9, starting_color: "R" };
   }
 
-  // ===== HELPERS
   other(t) {
     return t === this.RED ? this.YELLOW : this.RED;
   }
@@ -362,30 +348,68 @@ class Connect4Web {
     this.pendingTimers.clear();
   }
 
-  // ===== API (backend optionnel)
   apiBase() {
+  const { protocol, hostname, port } = window.location;
+
+  // Si le front est déjà servi par FastAPI
+  if (port === "8000") {
     return "/api";
   }
 
-  async apiFetch(path, opts = {}) {
-    const res = await fetch(`${this.apiBase()}${path}`, {
-      headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
-      ...opts,
-    });
-
-    let payload = null;
-    try {
-      payload = await res.json();
-    } catch { }
-
-    if (!res.ok) {
-      const msg = payload?.error || payload?.message || `HTTP ${res.status}`;
-      throw new Error(msg);
-    }
-    return payload;
+  // Si on est en local mais sur un autre serveur (Live Server, etc.)
+  if (hostname === "127.0.0.1" || hostname === "localhost") {
+    return `${protocol}//${hostname}:8000/api`;
   }
 
-  // ===== ONLINE HELPERS
+  // En production
+  return "/api";
+}
+
+  async apiFetch(path, opts = {}) {
+  const url = `${this.apiBase()}${path}`;
+  console.log("API CALL =", url, opts?.method || "GET");
+
+  const res = await fetch(url, {
+    headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
+    ...opts,
+  });
+
+  let payload = null;
+  try {
+    payload = await res.json();
+  } catch {}
+
+  if (!res.ok) {
+    const msg = payload?.error || payload?.message || `HTTP ${res.status}`;
+    throw new Error(msg);
+  }
+  return payload;
+}
+
+  async analyzePosition() {
+    if (!this.board || !this.el.prediction) return;
+    try {
+      const depth = this.clampInt(this.el.depth.value, 1, 8, 4);
+      const out = await this.apiFetch("/predict", {
+        method: "POST",
+        body: JSON.stringify({
+          board: this.board,
+          player: this.current,
+          depth,
+        }),
+      });
+
+      if (out.winner === null) {
+        this.el.prediction.textContent = `Prédiction : position équilibrée (score ${Math.trunc(out.score)})`;
+      } else {
+        const name = out.winner === this.RED ? "Rouge" : "Jaune";
+        this.el.prediction.textContent = `Prédiction : ${name} gagne dans ${out.moves} coup(s) (score ${Math.trunc(out.score)})`;
+      }
+    } catch (e) {
+      this.el.prediction.textContent = `Prédiction : erreur (${e?.message || e})`;
+    }
+  }
+
   setOnlineBadge(text) {
     if (!this.el.onlineBadge) return;
     this.el.onlineBadge.textContent = text;
@@ -408,8 +432,6 @@ class Connect4Web {
       this.clearTimers();
       this.robotThinking = false;
       this.aiLock = false;
-
-      // Forcer humain vs humain en online (sinon IA spam des coups locaux)
       this.el.mode.value = "2";
       this.el.aiMode.value = "random";
       this.setScoresBlank();
@@ -542,7 +564,6 @@ class Connect4Web {
         method: "POST",
         body: JSON.stringify({ player_secret: this.online.secret }),
       });
-      // Board is reset server-side; next poll will sync state
       this.resetLocalBoardOnly();
     } catch (e) {
       alert("❌ Relance impossible : " + (e?.message || e));
@@ -559,7 +580,6 @@ class Connect4Web {
       method: "POST",
       body: JSON.stringify({ player_secret: this.online.secret, col }),
     });
-    // pas de play local : on attend /state
   }
 
   resetLocalBoardOnly() {
@@ -581,7 +601,6 @@ class Connect4Web {
     this.resizeCanvasReliable();
   }
 
-  // Helper: update spectators display element
   _updateSpectatorsDisplay(count) {
     this.online.spectators = typeof count === "number" ? count : 0;
     if (this.el.spectatorsInfo) {
@@ -589,7 +608,6 @@ class Connect4Web {
     }
   }
 
-  // Helper: sync nameR/nameY from online players list
   _syncOnlinePlayerNames() {
     if (!this.online.enabled || !Array.isArray(this.online.players)) return;
     for (const p of this.online.players) {
@@ -631,41 +649,33 @@ class Connect4Web {
 
     this.current = st.current_turn === this.YELLOW ? this.YELLOW : this.RED;
 
-    // Sync players list + names displayed
     this.online.players = Array.isArray(st.players) ? st.players : [];
     this._syncOnlinePlayerNames();
 
-    // Spectators count
     const specCount = this.online.players.filter((p) => p?.token === "S").length;
     this._updateSpectatorsDisplay(specCount);
 
-    // Game over state
-    const wasOver = this.gameOver;
     this.gameOver = st.status === "finished" || st.winner !== null;
     if (st.winner === "R") this.winner = this.RED;
     else if (st.winner === "Y") this.winner = this.YELLOW;
     else if (st.winner === "D") this.winner = null;
     else this.winner = null;
 
-    // Compute winning cells when game just ended
     if (this.gameOver && this.winner) {
       this.winningCells = this._computeWinCellsFromMoves();
     } else {
       this.winningCells = [];
     }
 
-    // Badge: show code, token, spectators
     if (this.online.code) {
       const t = this.online.token || "?";
       this.setOnlineBadge(`🌐 #${this.online.code} (${t}) • 👁${specCount}`);
     }
 
-    // Show/hide rematch button (only visible when game is finished)
     if (this.el.onlineRematch) {
       this.el.onlineRematch.style.display = this.gameOver ? "" : "none";
     }
 
-    // Track status for rematch detection (reset local board if server reset)
     if (this.online.lastStatus === "finished" && st.status !== "finished") {
       this.resetLocalBoardOnly();
       this.online.lastStatus = st.status;
@@ -678,9 +688,9 @@ class Connect4Web {
     this.updateStatus();
     this.updateSidePanel();
     this.setButtonsState(true);
+    this.analyzePosition();
   }
 
-  // Recompute winning cells by replaying this.moves on a fresh board
   _computeWinCellsFromMoves() {
     const b = this.createBoard();
     let lastPos = null;
@@ -697,7 +707,6 @@ class Connect4Web {
     return this.checkWinCells(b, lastPos[0], lastPos[1], lastToken);
   }
 
-  // ===== NOMS
   getNameForToken(token) {
     if (this.online.enabled && Array.isArray(this.online.players)) {
       const p = this.online.players.find((x) => x?.token === token);
@@ -757,7 +766,6 @@ class Connect4Web {
     this.updateSidePanel();
   }
 
-  // ===== HISTORY
   loadHistory() {
     try {
       const raw = localStorage.getItem(this.LS_HISTORY);
@@ -811,8 +819,8 @@ class Connect4Web {
 
     this.el.historyBody.innerHTML = arr.length
       ? arr
-        .map(
-          (x) => `
+          .map(
+            (x) => `
         <tr>
           <td>${this.escapeHtml(x.player)}</td>
           <td>${this.escapeHtml(niceType(x.type))}</td>
@@ -822,12 +830,11 @@ class Connect4Web {
           <td>${this.escapeHtml(this.fmtWhen(x.when))}</td>
         </tr>
       `
-        )
-        .join("")
+          )
+          .join("")
       : `<tr><td colspan="6" class="muted">Aucun historique.</td></tr>`;
   }
 
-  // ===== SAVE NAME
   ensureDefaultSaveName() {
     const pad = (n) => String(n).padStart(2, "0");
     const d = new Date();
@@ -844,7 +851,6 @@ class Connect4Web {
     return (this.el.saveName.value || "partie").trim() || "partie";
   }
 
-  // ===== UI
   bindUI() {
     this.el.newGame.addEventListener("click", () => {
       if (this.online.enabled) {
@@ -854,6 +860,10 @@ class Connect4Web {
       }
     });
     this.el.stop.addEventListener("click", () => this.stopGame());
+
+    if (this.el.analyzeBtn) {
+      this.el.analyzeBtn.addEventListener("click", () => this.analyzePosition());
+    }
 
     this.el.mode.addEventListener("change", () => {
       if (this.online.enabled) return;
@@ -872,7 +882,9 @@ class Connect4Web {
       if (!this.gameOver && this.viewIndex === this.moves.length && !this.isHumanTurn(mode, this.current)) {
         this.schedule(() => this.robotStep(), 140);
       }
+      this.analyzePosition();
     });
+
     this.el.aiMode.addEventListener("change", () => {
       if (this.online.enabled) return;
 
@@ -888,14 +900,19 @@ class Connect4Web {
       if (!this.gameOver && this.viewIndex === this.moves.length && !this.isHumanTurn(mode, this.current)) {
         this.schedule(() => this.robotStep(), 140);
       }
+      this.analyzePosition();
     });
-    this.el.depth.addEventListener("change", () => this.renderAiScores());
+
+    this.el.depth.addEventListener("change", () => {
+      this.renderAiScores();
+      this.analyzePosition();
+    });
+
     this.el.noDigits.addEventListener("change", () => this.applyNoDigitsMode());
 
     this.el.changeR.addEventListener("click", () => this.changePlayerName(this.RED));
     this.el.changeY.addEventListener("click", () => this.changePlayerName(this.YELLOW));
 
-    // Dropdown save/load only
     this.el.saveMenu.addEventListener("change", async () => {
       const v = this.el.saveMenu.value;
       this.el.saveMenu.value = "";
@@ -915,7 +932,6 @@ class Connect4Web {
     this.el.loadJson.addEventListener("change", (e) => this.loadJsonFlow(e));
     this.el.clearHistoryBtn.addEventListener("click", () => this.clearHistory());
 
-    // Replay
     this.el.moveSlider.addEventListener("input", () => {
       this.navigateTo(parseInt(this.el.moveSlider.value, 10));
     });
@@ -924,7 +940,6 @@ class Connect4Web {
     this.el.nextMove.addEventListener("click", () => this.navigateTo(this.viewIndex + 1));
     this.el.lastMove.addEventListener("click", () => this.navigateTo(this.moves.length));
 
-    // Canvas interactions
     this.el.canvas.addEventListener("mousemove", (ev) => this.onCanvasMove(ev));
     this.el.canvas.addEventListener("mouseleave", () => {
       this.setHoverColumn(null);
@@ -932,7 +947,6 @@ class Connect4Web {
     });
     this.el.canvas.addEventListener("click", (ev) => this.onCanvasClick(ev));
 
-    // ===== ONLINE buttons
     if (this.el.onlineCreate) {
       this.el.onlineCreate.addEventListener("click", async () => {
         try {
@@ -976,7 +990,6 @@ class Connect4Web {
     }
   }
 
-  // ===== COLUMN UI
   rebuildColumnWidgets() {
     this.el.colLabels.innerHTML = "";
     this.el.colButtons.innerHTML = "";
@@ -1036,7 +1049,6 @@ class Connect4Web {
   }
 
   setButtonsState(enabled) {
-    // ONLINE: bouton actif seulement si c'est ton tour et que tu n'es pas spectateur
     if (this.online.enabled) {
       const can =
         enabled &&
@@ -1063,7 +1075,6 @@ class Connect4Web {
     for (const b of this.colBtnEls) b.disabled = !can;
   }
 
-  // ===== REPLAY
   updateReplayUI() {
     const total = this.moves.length;
     this.el.moveSlider.max = String(total);
@@ -1110,16 +1121,18 @@ class Connect4Web {
     this.drawBoard();
     this.updateStatus();
     this.updateReplayUI();
+    this.analyzePosition();
   }
 
-  // ===== GAME CORE
   createBoard() {
     return Array.from({ length: this.rows }, () => Array.from({ length: this.cols }, () => this.EMPTY));
   }
 
   validColumns(board = this.board) {
     const out = [];
-    for (let c = 0; c < this.cols; c++) if (board[0][c] === this.EMPTY) out.push(c);
+    for (let c = 0; c < this.cols; c++) {
+      if (board[0][c] === this.EMPTY) out.push(c);
+    }
     return out;
   }
 
@@ -1136,7 +1149,9 @@ class Connect4Web {
   }
 
   isDraw(board = this.board) {
-    for (let c = 0; c < this.cols; c++) if (board[0][c] === this.EMPTY) return false;
+    for (let c = 0; c < this.cols; c++) {
+      if (board[0][c] === this.EMPTY) return false;
+    }
     return true;
   }
 
@@ -1157,8 +1172,8 @@ class Connect4Web {
     for (const [dr, dc] of dirs) {
       const cells = [[lastRow, lastCol]];
 
-      let r = lastRow + dr,
-        c = lastCol + dc;
+      let r = lastRow + dr;
+      let c = lastCol + dc;
       while (0 <= r && r < this.rows && 0 <= c && c < this.cols && board[r][c] === token) {
         cells.push([r, c]);
         r += dr;
@@ -1178,14 +1193,12 @@ class Connect4Web {
     return [];
   }
 
-  // ===== CANVAS INPUT
   canvasToBoardCol(clientX, clientY) {
     if (!this.lastDrawGeom) return null;
     const wrapRect = this.el.canvasWrap.getBoundingClientRect();
     const x = clientX - wrapRect.left;
 
     const { x0, boardW, cell } = this.lastDrawGeom;
-    // Accepte le clic sur toute la hauteur du canvas, juste vérifier la colonne
     if (x < x0 || x > x0 + boardW) return null;
 
     const col = Math.floor((x - x0) / cell);
@@ -1205,11 +1218,10 @@ class Connect4Web {
     this.onClick(col);
   }
 
-  // ===== CANVAS RESIZE (RESPONSIVE) ✅
   setupResponsiveCanvas() {
     try {
       this._resizeObserver?.disconnect?.();
-    } catch { }
+    } catch {}
 
     const wrap = this.el.canvasWrap;
     if (!wrap) return;
@@ -1247,9 +1259,7 @@ class Connect4Web {
     if (this.el.canvas.width !== bufW) this.el.canvas.width = bufW;
     if (this.el.canvas.height !== bufH) this.el.canvas.height = bufH;
 
-    // draw in CSS pixels
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
     this.drawBoard();
   }
 
@@ -1279,13 +1289,11 @@ class Connect4Web {
 
     this.lastDrawGeom = { x0, y0, cell, boardW, boardH };
 
-    // hover column highlight
     if (this.hoverCol !== null) {
       ctx.fillStyle = this.COLOR_HOVER_COL;
       ctx.fillRect(x0 + this.hoverCol * cell, y0, cell, boardH);
     }
 
-    // board background
     ctx.fillStyle = this.COLOR_BG;
     ctx.fillRect(x0, y0, boardW, boardH);
 
@@ -1332,7 +1340,6 @@ class Connect4Web {
     }
   }
 
-  // ===== STATUS + INFOS
   updateSidePanel() {
     this.el.rowsVal.textContent = String(this.rows);
     this.el.colsVal.textContent = String(this.cols);
@@ -1355,11 +1362,13 @@ class Connect4Web {
     }
 
     if (this.gameOver) {
-      if (this.winner === this.RED)
+      if (this.winner === this.RED) {
         msg += `Partie #${this.gameIndex} — 🎉 Gagnant : Rouge (${this.getNameForToken(this.RED)})`;
-      else if (this.winner === this.YELLOW)
+      } else if (this.winner === this.YELLOW) {
         msg += `Partie #${this.gameIndex} — 🎉 Gagnant : Jaune (${this.getNameForToken(this.YELLOW)})`;
-      else msg += `Partie #${this.gameIndex} — 🤝 Match nul`;
+      } else {
+        msg += `Partie #${this.gameIndex} — 🤝 Match nul`;
+      }
     } else {
       const who = this.current === this.RED ? "Rouge" : "Jaune";
       msg += `Partie #${this.gameIndex} — À jouer : ${who} (${this.getNameForToken(this.current)})`;
@@ -1370,394 +1379,10 @@ class Connect4Web {
     this.updateSidePanel();
   }
 
-  // ===== AI SCORES
   setScoresBlank() {
     for (const s of this.scoreEls) s.textContent = "";
   }
 
-  dropInGrid(grid, col, token) {
-    if (grid[0][col] !== this.EMPTY) return null;
-    for (let r = this.rows - 1; r >= 0; r--) {
-      if (grid[r][col] === this.EMPTY) {
-        grid[r][col] = token;
-        return [r, col];
-      }
-    }
-    return null;
-  }
-
-  scorePosition(grid, player) {
-    const opp = this.other(player);
-
-    const scoreLine = (cells) => {
-      let p = 0, o = 0, e = 0;
-      for (const v of cells) {
-        if (v === player) p++;
-        else if (v === opp) o++;
-        else e++;
-      }
-      if (p > 0 && o > 0) return 0;
-      if (p === 4) return 1000000;
-      if (o === 4) return -1000000;
-      if (p === 3 && e === 1) return 200;
-      if (p === 2 && e === 2) return 30;
-      if (o === 3 && e === 1) return -220;
-      if (o === 2 && e === 2) return -35;
-      return 0;
-    };
-
-    let score = 0;
-
-    const center = Math.floor(this.cols / 2);
-    let centerCount = 0;
-    for (let r = 0; r < this.rows; r++) if (grid[r][center] === player) centerCount++;
-    score += centerCount * 10;
-
-    for (let r = 0; r < this.rows; r++) {
-      for (let c = 0; c <= this.cols - 4; c++) {
-        score += scoreLine([grid[r][c], grid[r][c + 1], grid[r][c + 2], grid[r][c + 3]]);
-      }
-    }
-    for (let c = 0; c < this.cols; c++) {
-      for (let r = 0; r <= this.rows - 4; r++) {
-        score += scoreLine([grid[r][c], grid[r + 1][c], grid[r + 2][c], grid[r + 3][c]]);
-      }
-    }
-    for (let r = 3; r < this.rows; r++) {
-      for (let c = 0; c <= this.cols - 4; c++) {
-        score += scoreLine([grid[r][c], grid[r - 1][c + 1], grid[r - 2][c + 2], grid[r - 3][c + 3]]);
-      }
-    }
-    for (let r = 0; r <= this.rows - 4; r++) {
-      for (let c = 0; c <= this.cols - 4; c++) {
-        score += scoreLine([grid[r][c], grid[r + 1][c + 1], grid[r + 2][c + 2], grid[r + 3][c + 3]]);
-      }
-    }
-
-    return score;
-  }
-
-  terminalState(grid) {
-    const checkToken = (t) => {
-      for (let r = 0; r < this.rows; r++) {
-        for (let c = 0; c <= this.cols - 4; c++) {
-          if (grid[r][c] === t && grid[r][c + 1] === t && grid[r][c + 2] === t && grid[r][c + 3] === t) return true;
-        }
-      }
-      for (let c = 0; c < this.cols; c++) {
-        for (let r = 0; r <= this.rows - 4; r++) {
-          if (grid[r][c] === t && grid[r + 1][c] === t && grid[r + 2][c] === t && grid[r + 3][c] === t) return true;
-        }
-      }
-      for (let r = 0; r <= this.rows - 4; r++) {
-        for (let c = 0; c <= this.cols - 4; c++) {
-          if (grid[r][c] === t && grid[r + 1][c + 1] === t && grid[r + 2][c + 2] === t && grid[r + 3][c + 3] === t) return true;
-        }
-      }
-      for (let r = 3; r < this.rows; r++) {
-        for (let c = 0; c <= this.cols - 4; c++) {
-          if (grid[r][c] === t && grid[r - 1][c + 1] === t && grid[r - 2][c + 2] === t && grid[r - 3][c + 3] === t) return true;
-        }
-      }
-      return false;
-    };
-
-    if (checkToken(this.RED)) return { over: true, winner: this.RED };
-    if (checkToken(this.YELLOW)) return { over: true, winner: this.YELLOW };
-
-    for (let c = 0; c < this.cols; c++) if (grid[0][c] === this.EMPTY) return { over: false };
-    return { over: true, winner: null };
-  }
-  findBestMove(grid, depth, aiPlayer, humanPlayer) {
-    const moves = this.validColumns(grid);
-    if (!moves.length) return null;
-
-    // 1) gagner immédiatement
-    for (const col of moves) {
-      const g2 = this.copyGrid(grid);
-      const pos = this.dropInGrid(g2, col, aiPlayer);
-      if (!pos) continue;
-
-      const winCells = this.checkWinCells(g2, pos[0], pos[1], aiPlayer);
-      if (winCells.length) return col;
-    }
-
-    // 2) bloquer une victoire immédiate adverse
-    const opponentWinningMoves = [];
-    for (const col of moves) {
-      const g2 = this.copyGrid(grid);
-      const pos = this.dropInGrid(g2, col, humanPlayer);
-      if (!pos) continue;
-
-      const winCells = this.checkWinCells(g2, pos[0], pos[1], humanPlayer);
-      if (winCells.length) opponentWinningMoves.push(col);
-    }
-
-    if (opponentWinningMoves.length === 1) {
-      return opponentWinningMoves[0];
-    }
-
-    // S'il y a plusieurs menaces immédiates adverses, on essaye au moins
-    // d'en bloquer une. Le minimax départagera ensuite si besoin.
-    if (opponentWinningMoves.length > 1) {
-      return opponentWinningMoves[0];
-    }
-
-    // 3) sinon minimax
-    const result = this.minimax(grid, depth, -Infinity, Infinity, true, aiPlayer, humanPlayer);
-    return result.move;
-  }
-  countImmediateWins(grid, player) {
-    let count = 0;
-    const moves = this.validColumns(grid);
-
-    for (const col of moves) {
-      const g2 = this.copyGrid(grid);
-      const pos = this.dropInGrid(g2, col, player);
-      if (!pos) continue;
-
-      const winCells = this.checkWinCells(g2, pos[0], pos[1], player);
-      if (winCells.length) count++;
-    }
-
-    return count;
-  }
-  // Évalue une fenêtre de 4 cellules pour le score heuristique
-  evaluateWindow(window, aiPlayer, humanPlayer) {
-    let aiCount = 0, humanCount = 0, emptyCount = 0;
-    for (const cell of window) {
-      if (cell === aiPlayer) aiCount++;
-      else if (cell === humanPlayer) humanCount++;
-      else emptyCount++;
-    }
-
-    // Fenêtre mixte → inutile
-    if (aiCount > 0 && humanCount > 0) return 0;
-
-    // Victoire / défaite immédiate (normalement gérée avant, mais sécurité)
-    if (aiCount === 4) return 1000000;
-    if (humanCount === 4) return -1000000;
-
-    // Positif : menaces IA
-    if (aiCount === 3 && emptyCount === 1) return 150;
-    if (aiCount === 2 && emptyCount === 2) return 20;
-    if (aiCount === 1 && emptyCount === 3) return 2;
-
-    // Négatif : menaces adversaire
-    if (humanCount === 3 && emptyCount === 1) return -180;
-    if (humanCount === 2 && emptyCount === 2) return -25;
-    if (humanCount === 1 && emptyCount === 3) return -2;
-
-    return 0;
-  }
-
-  heuristicScore(grid, aiPlayer, humanPlayer) {
-    let score = 0;
-    const centerCol = Math.floor(this.cols / 2);
-
-    // contrôle du centre
-    let centerAI = 0;
-    let centerHuman = 0;
-    for (let r = 0; r < this.rows; r++) {
-      if (grid[r][centerCol] === aiPlayer) centerAI++;
-      if (grid[r][centerCol] === humanPlayer) centerHuman++;
-    }
-    score += centerAI * 12;
-    score -= centerHuman * 12;
-
-    // horizontales
-    for (let r = 0; r < this.rows; r++) {
-      for (let c = 0; c <= this.cols - 4; c++) {
-        const window = [grid[r][c], grid[r][c + 1], grid[r][c + 2], grid[r][c + 3]];
-        score += this.evaluateWindow(window, aiPlayer, humanPlayer);
-      }
-    }
-
-    // verticales
-    for (let c = 0; c < this.cols; c++) {
-      for (let r = 0; r <= this.rows - 4; r++) {
-        const window = [grid[r][c], grid[r + 1][c], grid[r + 2][c], grid[r + 3][c]];
-        score += this.evaluateWindow(window, aiPlayer, humanPlayer);
-      }
-    }
-
-    // diagonales \
-    for (let r = 0; r <= this.rows - 4; r++) {
-      for (let c = 0; c <= this.cols - 4; c++) {
-        const window = [grid[r][c], grid[r + 1][c + 1], grid[r + 2][c + 2], grid[r + 3][c + 3]];
-        score += this.evaluateWindow(window, aiPlayer, humanPlayer);
-      }
-    }
-
-    // diagonales /
-    for (let r = 3; r < this.rows; r++) {
-      for (let c = 0; c <= this.cols - 4; c++) {
-        const window = [grid[r][c], grid[r - 1][c + 1], grid[r - 2][c + 2], grid[r - 3][c + 3]];
-        score += this.evaluateWindow(window, aiPlayer, humanPlayer);
-      }
-    }
-
-    return score;
-  }
-  minimax(grid, depth, alpha, beta, maximizingPlayer, aiPlayer, humanPlayer) {
-    const terminal = this.terminalState(grid);
-
-    if (terminal.over) {
-      if (terminal.winner === aiPlayer) {
-        return { score: 1000000000 + depth, move: null };
-      }
-      if (terminal.winner === humanPlayer) {
-        return { score: -1000000000 - depth, move: null };
-      }
-      return { score: 0, move: null };
-    }
-
-    if (depth === 0) {
-      return { score: this.scorePosition(grid, aiPlayer), move: null };
-    }
-
-    let moves = this.validColumns(grid);
-    const center = Math.floor(this.cols / 2);
-
-    moves.sort((a, b) => Math.abs(a - center) - Math.abs(b - center));
-
-    let bestMove = moves.length ? moves[0] : null;
-
-    if (maximizingPlayer) {
-      let maxEval = -Infinity;
-
-      for (const col of moves) {
-        const nextGrid = this.copyGrid(grid);
-        const pos = this.dropInGrid(nextGrid, col, aiPlayer);
-        if (!pos) continue;
-
-        let result;
-
-        const aiWin = this.checkWinCells(nextGrid, pos[0], pos[1], aiPlayer);
-        if (aiWin.length) {
-          result = { score: 1000000000 + depth, move: col };
-        } else {
-          let oppCanWin = false;
-          const oppMoves = this.validColumns(nextGrid);
-
-          for (const oppCol of oppMoves) {
-            const testGrid = this.copyGrid(nextGrid);
-            const oppPos = this.dropInGrid(testGrid, oppCol, humanPlayer);
-            if (!oppPos) continue;
-
-            const oppWin = this.checkWinCells(testGrid, oppPos[0], oppPos[1], humanPlayer);
-            if (oppWin.length) {
-              oppCanWin = true;
-              break;
-            }
-          }
-
-          if (oppCanWin) {
-            result = { score: -999999999, move: col };
-          } else {
-            result = this.minimax(nextGrid, depth - 1, alpha, beta, false, aiPlayer, humanPlayer);
-          }
-        }
-
-        if (result.score > maxEval) {
-          maxEval = result.score;
-          bestMove = col;
-        }
-
-        alpha = Math.max(alpha, maxEval);
-        if (beta <= alpha) break;
-      }
-
-      return { score: maxEval, move: bestMove };
-    } else {
-      let minEval = Infinity;
-
-      for (const col of moves) {
-        const nextGrid = this.copyGrid(grid);
-        const pos = this.dropInGrid(nextGrid, col, humanPlayer);
-        if (!pos) continue;
-
-        let result;
-
-        const humanWin = this.checkWinCells(nextGrid, pos[0], pos[1], humanPlayer);
-        if (humanWin.length) {
-          result = { score: -1000000000 - depth, move: col };
-        } else {
-          let aiCanWin = false;
-          const aiMoves = this.validColumns(nextGrid);
-
-          for (const aiCol of aiMoves) {
-            const testGrid = this.copyGrid(nextGrid);
-            const aiPos = this.dropInGrid(testGrid, aiCol, aiPlayer);
-            if (!aiPos) continue;
-
-            const aiWin = this.checkWinCells(testGrid, aiPos[0], aiPos[1], aiPlayer);
-            if (aiWin.length) {
-              aiCanWin = true;
-              break;
-            }
-          }
-
-          if (aiCanWin) {
-            result = { score: 999999999, move: col };
-          } else {
-            result = this.minimax(nextGrid, depth - 1, alpha, beta, true, aiPlayer, humanPlayer);
-          }
-        }
-
-        if (result.score < minEval) {
-          minEval = result.score;
-          bestMove = col;
-        }
-
-        beta = Math.min(beta, minEval);
-        if (beta <= alpha) break;
-      }
-
-      return { score: minEval, move: bestMove };
-    }
-  }
-  hasImmediateWinningMove(grid, player) {
-    const moves = this.validColumns(grid);
-
-    for (const col of moves) {
-      const g2 = this.copyGrid(grid);
-      const pos = this.dropInGrid(g2, col, player);
-      if (!pos) continue;
-
-      const winCells = this.checkWinCells(g2, pos[0], pos[1], player);
-      if (winCells.length) return true;
-    }
-
-    return false;
-  }
-
-  findImmediateBestMove(grid, player) {
-    const opponent = this.other(player);
-    const moves = this.validColumns(grid);
-
-    // 1. gagner tout de suite
-    for (const col of moves) {
-      const g = this.copyGrid(grid);
-      const pos = this.dropInGrid(g, col, player);
-      if (!pos) continue;
-      if (this.checkWinCells(g, pos[0], pos[1], player).length) {
-        return col;
-      }
-    }
-
-    // 2. bloquer l'adversaire s'il gagne au prochain coup
-    for (const col of moves) {
-      const g = this.copyGrid(grid);
-      const pos = this.dropInGrid(g, col, opponent);
-      if (!pos) continue;
-      if (this.checkWinCells(g, pos[0], pos[1], opponent).length) {
-        return col;
-      }
-    }
-
-    return null;
-  }
   renderAiScores() {
     if (this.online.enabled) {
       this.setScoresBlank();
@@ -1774,12 +1399,123 @@ class Connect4Web {
     const depth = this.clampInt(this.el.depth.value, 1, 8, 4);
     const grid0 = this.copyGrid(this.board);
     const player = this.current;
-    const opponent = this.other(player);
     const valids = new Set(this.validColumns(grid0));
 
     for (let c = 0; c < this.cols; c++) {
       this.scoreEls[c].textContent = valids.has(c) ? "..." : "N/A";
     }
+
+    const scoreLine = (cells, me) => {
+      const opp = this.other(me);
+      let cp = 0;
+      let co = 0;
+      let ce = 0;
+      for (const v of cells) {
+        if (v === me) cp++;
+        else if (v === opp) co++;
+        else ce++;
+      }
+      if (cp === 4) return 100000;
+      if (co === 4) return -100000;
+      let s = 0;
+      if (cp === 3 && ce === 1) s += 50;
+      else if (cp === 2 && ce === 2) s += 10;
+      if (co === 3 && ce === 1) s -= 80;
+      else if (co === 2 && ce === 2) s -= 10;
+      return s;
+    };
+
+    const heuristic = (grid, me) => {
+      let score = 0;
+      const center = Math.floor(this.cols / 2);
+      for (let r = 0; r < this.rows; r++) {
+        if (grid[r][center] === me) score += 3;
+      }
+
+      for (let r = 0; r < this.rows; r++) {
+        for (let c = 0; c <= this.cols - 4; c++) {
+          score += scoreLine([grid[r][c], grid[r][c + 1], grid[r][c + 2], grid[r][c + 3]], me);
+        }
+      }
+      for (let c = 0; c < this.cols; c++) {
+        for (let r = 0; r <= this.rows - 4; r++) {
+          score += scoreLine([grid[r][c], grid[r + 1][c], grid[r + 2][c], grid[r + 3][c]], me);
+        }
+      }
+      for (let r = 0; r <= this.rows - 4; r++) {
+        for (let c = 0; c <= this.cols - 4; c++) {
+          score += scoreLine([grid[r][c], grid[r + 1][c + 1], grid[r + 2][c + 2], grid[r + 3][c + 3]], me);
+        }
+      }
+      for (let r = 0; r <= this.rows - 4; r++) {
+        for (let c = 3; c < this.cols; c++) {
+          score += scoreLine([grid[r][c], grid[r + 1][c - 1], grid[r + 2][c - 2], grid[r + 3][c - 3]], me);
+        }
+      }
+      return score;
+    };
+
+    const terminal = (grid) => {
+      for (let r = 0; r < this.rows; r++) {
+        for (let c = 0; c < this.cols; c++) {
+          const p = grid[r][c];
+          if (p === this.EMPTY) continue;
+          if (c + 3 < this.cols && [0, 1, 2, 3].every((i) => grid[r][c + i] === p)) {
+            return { over: true, winner: p };
+          }
+          if (r + 3 < this.rows && [0, 1, 2, 3].every((i) => grid[r + i][c] === p)) {
+            return { over: true, winner: p };
+          }
+          if (r + 3 < this.rows && c + 3 < this.cols && [0, 1, 2, 3].every((i) => grid[r + i][c + i] === p)) {
+            return { over: true, winner: p };
+          }
+          if (r + 3 < this.rows && c - 3 >= 0 && [0, 1, 2, 3].every((i) => grid[r + i][c - i] === p)) {
+            return { over: true, winner: p };
+          }
+        }
+      }
+      if (this.validColumns(grid).length === 0) return { over: true, winner: null };
+      return { over: false, winner: null };
+    };
+
+    const minimax = (grid, depthLeft, alpha, beta, maximizing, rootPlayer) => {
+      const t = terminal(grid);
+      if (t.over) {
+        if (t.winner === rootPlayer) return 1000000;
+        if (t.winner === this.other(rootPlayer)) return -1000000;
+        return 0;
+      }
+      if (depthLeft === 0) return heuristic(grid, rootPlayer);
+
+      const cols = this.validColumns(grid).sort(
+        (a, b) => Math.abs(a - Math.floor(this.cols / 2)) - Math.abs(b - Math.floor(this.cols / 2))
+      );
+      const current = maximizing ? rootPlayer : this.other(rootPlayer);
+
+      if (maximizing) {
+        let best = -1e18;
+        for (const col of cols) {
+          const g2 = this.copyGrid(grid);
+          this.dropToken(g2, col, current);
+          const val = minimax(g2, depthLeft - 1, alpha, beta, false, rootPlayer);
+          if (val > best) best = val;
+          alpha = Math.max(alpha, best);
+          if (alpha >= beta) break;
+        }
+        return best;
+      } else {
+        let best = 1e18;
+        for (const col of cols) {
+          const g2 = this.copyGrid(grid);
+          this.dropToken(g2, col, current);
+          const val = minimax(g2, depthLeft - 1, alpha, beta, true, rootPlayer);
+          if (val < best) best = val;
+          beta = Math.min(beta, best);
+          if (alpha >= beta) break;
+        }
+        return best;
+      }
+    };
 
     const colsList = [...Array(this.cols).keys()];
     const step = (i = 0) => {
@@ -1793,7 +1529,7 @@ class Connect4Web {
         this.scoreEls[col].textContent = "N/A";
       } else {
         const g2 = this.copyGrid(grid0);
-        const pos = this.dropInGrid(g2, col, player);
+        const pos = this.dropToken(g2, col, player);
 
         if (!pos) {
           this.scoreEls[col].textContent = "N/A";
@@ -1801,10 +1537,10 @@ class Connect4Web {
           const immediateWin = this.checkWinCells(g2, pos[0], pos[1], player).length > 0;
 
           if (immediateWin) {
-            this.scoreEls[col].textContent = "1000000000";
+            this.scoreEls[col].textContent = "1000000";
           } else {
-            const result = this.minimax(g2, depth - 1, -1e18, 1e18, false, player, opponent);
-            this.scoreEls[col].textContent = String(Math.trunc(result.score));
+            const val = minimax(g2, depth - 1, -1e18, 1e18, false, player);
+            this.scoreEls[col].textContent = String(Math.trunc(val));
           }
         }
       }
@@ -1814,7 +1550,7 @@ class Connect4Web {
 
     step(0);
   }
-  // ===== GAME FLOW
+
   playMove(col, token) {
     const pos = this.dropToken(this.board, col, token);
     if (!pos) return true;
@@ -1861,7 +1597,6 @@ class Connect4Web {
   onClick(col) {
     if (this.gameOver || this.robotThinking || this.aiLock) return;
 
-    // ✅ ONLINE: on envoie le coup au serveur
     if (this.online.enabled) {
       if (this.online.token === "S") {
         alert("Tu es spectateur sur cette partie.");
@@ -1892,12 +1627,6 @@ class Connect4Web {
     }
   }
 
-  robotRandomColumn(board) {
-    const cols = this.validColumns(board);
-    if (!cols.length) return null;
-    return cols[Math.floor(Math.random() * cols.length)];
-  }
-
   robotStep() {
     if (this.online.enabled) return;
     if (this.gameOver) return;
@@ -1915,7 +1644,8 @@ class Connect4Web {
     this.setButtonsState(false);
 
     if (this.el.aiMode.value === "random") {
-      const col = this.robotRandomColumn(this.board);
+      const valids = this.validColumns(this.board);
+      const col = valids.length ? valids[Math.floor(Math.random() * valids.length)] : null;
       if (col === null) {
         this.gameOver = true;
         this.winner = null;
@@ -1938,21 +1668,11 @@ class Connect4Web {
     }
 
     const depth = this.clampInt(this.el.depth.value, 1, 8, 4);
-    this.robotPlayMinimaxAsync(depth);
+    this.robotPlayAsync(depth, this.el.aiMode.value);
   }
 
-  robotPlayMinimaxAsync(depth) {
-    if (this.online.enabled) {
-      this.aiLock = false;
-      return;
-    }
-
-    if (this.gameOver) {
-      this.aiLock = false;
-      return;
-    }
-
-    if (this.robotThinking) {
+  async robotPlayAsync(depth, aiMode) {
+    if (this.online.enabled || this.gameOver || this.robotThinking) {
       this.aiLock = false;
       return;
     }
@@ -1961,96 +1681,62 @@ class Connect4Web {
     this.updateStatus();
     this.setButtonsState(false);
 
-    const grid0 = this.copyGrid(this.board);
-    const player = this.current;
-    const opponent = this.other(player);
-    const valids = new Set(this.validColumns(grid0));
+    try {
+      const out = await this.apiFetch("/ai/move", {
+        method: "POST",
+        body: JSON.stringify({
+          board: this.board,
+          player: this.current,
+          ai_mode: aiMode,
+          depth,
+        }),
+      });
 
-    for (let c = 0; c < this.cols; c++) {
-      this.scoreEls[c].textContent = valids.has(c) ? "..." : "N/A";
+      const bestCol = out.col;
+      const scores = out.scores || {};
+
+      Object.keys(scores).forEach((k) => {
+        const c = Number(k);
+        if (Number.isInteger(c) && c < this.scoreEls.length) {
+          const v = scores[k];
+          this.scoreEls[c].textContent =
+            v > 900000 ? "✓" : v < -900000 ? "✗" : String(Math.trunc(v));
+        }
+      });
+
+      this.robotThinking = false;
+      this.updateStatus();
+
+      if (bestCol === null || bestCol === undefined || this.gameOver) {
+        this.aiLock = false;
+        this.setButtonsState(true);
+        return;
+      }
+
+      this.playMove(bestCol, this.current);
+      this.aiLock = false;
+
+      const mode = parseInt(this.el.mode.value, 10);
+      if (mode === 0 && !this.gameOver) {
+        this.clearTimers();
+        this.schedule(() => this.robotStep(), 250);
+      } else {
+        this.setButtonsState(true);
+      }
+    } catch (e) {
+      this.robotThinking = false;
+      this.aiLock = false;
+      this.updateStatus();
+      alert("Erreur IA : " + (e?.message || e));
     }
-
-    const center = Math.floor(this.cols / 2);
-    const colList = [...Array(this.cols).keys()].sort((a, b) => Math.abs(a - center) - Math.abs(b - center));
-    const state = { bestCol: null, bestVal: -1e18 };
-
-    const step = (i = 0) => {
-      if (this.gameOver) {
-        this.robotThinking = false;
-        this.aiLock = false;
-        this.updateStatus();
-        return;
-      }
-
-      if (i >= colList.length) {
-        let bestCol = state.bestCol;
-        const validArr = [...valids];
-
-        if (bestCol === null && validArr.length) {
-          bestCol = validArr[Math.floor(Math.random() * validArr.length)];
-        }
-
-        this.robotThinking = false;
-        this.updateStatus();
-
-        if (bestCol !== null) {
-          this.playMove(bestCol, player);
-        }
-
-        this.aiLock = false;
-
-        const mode = parseInt(this.el.mode.value, 10);
-        if (mode === 0 && !this.gameOver) {
-          this.clearTimers();
-          this.schedule(() => this.robotStep(), 250);
-        } else {
-          this.setButtonsState(true);
-        }
-        return;
-      }
-
-      const col = colList[i];
-
-      if (!valids.has(col)) {
-        this.scoreEls[col].textContent = "N/A";
-        this.schedule(() => step(i + 1), 18);
-        return;
-      }
-
-      const g2 = this.copyGrid(grid0);
-      const pos = this.dropInGrid(g2, col, player);
-
-      let val = -1e18;
-
-      if (pos) {
-        const immediateWin = this.checkWinCells(g2, pos[0], pos[1], player).length > 0;
-
-        if (immediateWin) {
-          val = 1000000000;
-        } else {
-          const result = this.minimax(g2, depth - 1, -1e18, 1e18, false, player, opponent);
-          val = result.score;
-        }
-      }
-
-      this.scoreEls[col].textContent = String(Math.trunc(val));
-
-      if (val > state.bestVal) {
-        state.bestVal = val;
-        state.bestCol = col;
-      }
-
-      this.schedule(() => step(i + 1), 26);
-    };
-
-    this.clearTimers();
-    step(0);
   }
+
   afterStateChange(triggerRobot = true) {
     this.drawBoard();
     this.updateStatus();
     this.renderAiScores();
     this.updateReplayUI();
+    this.analyzePosition();
 
     if (this.gameOver) {
       this.setButtonsState(false);
@@ -2120,7 +1806,6 @@ class Connect4Web {
     this.resizeCanvasReliable();
   }
 
-  // ===== SAVE/LOAD JSON
   buildSavePayload(saveName) {
     return {
       save_name: saveName,
@@ -2199,9 +1884,9 @@ class Connect4Web {
     this.robotThinking = false;
     this.aiLock = false;
 
-    const rows = data.rows,
-      cols = data.cols,
-      start = data.starting_color;
+    const rows = data.rows;
+    const cols = data.cols;
+    const start = data.starting_color;
     const moves = data.moves ?? [];
     const viewIndex = data.view_index ?? 0;
 
@@ -2209,7 +1894,9 @@ class Connect4Web {
     if (!Number.isInteger(cols) || cols < 4 || cols > 20) throw new Error("cols invalide");
     if (start !== this.RED && start !== this.YELLOW) throw new Error("starting_color invalide");
     if (!Array.isArray(moves) || moves.some((x) => !Number.isInteger(x))) throw new Error("moves invalide");
-    if (!Number.isInteger(viewIndex) || viewIndex < 0 || viewIndex > moves.length) throw new Error("view_index invalide");
+    if (!Number.isInteger(viewIndex) || viewIndex < 0 || viewIndex > moves.length) {
+      throw new Error("view_index invalide");
+    }
 
     if (typeof data.player_red === "string" && data.player_red.trim()) {
       this.setNameForToken(this.RED, data.player_red.trim());
@@ -2226,7 +1913,7 @@ class Connect4Web {
 
     this.el.mode.value = String(Number.isInteger(data.mode) ? data.mode : 2);
     this.gameIndex = Number.isInteger(data.game_index) ? data.game_index : 1;
-    this.el.aiMode.value = data.ai_mode === "minimax" ? "minimax" : "random";
+    this.el.aiMode.value = ["random", "minimax", "trained"].includes(data.ai_mode) ? data.ai_mode : "random";
     this.el.depth.value = String(this.clampInt(data.ai_depth, 1, 8, 4));
 
     if (typeof data.save_name === "string" && data.save_name.trim()) {
@@ -2274,7 +1961,6 @@ class Connect4Web {
     this.resizeCanvasReliable();
   }
 
-  // ===== DB save/load (optionnel)
   computeConfidence(mode, aiMode, aiDepth) {
     mode = this.clampInt(mode, 0, 2, 2);
     aiMode = (aiMode || "random").toLowerCase();
@@ -2282,6 +1968,7 @@ class Connect4Web {
 
     if (mode === 2) return 5;
     if (aiMode === "random") return 1;
+    if (aiMode === "trained") return 4;
     if (aiMode === "minimax") {
       if (aiDepth <= 2) return 2;
       if (aiDepth <= 4) return 3;
@@ -2308,7 +1995,6 @@ class Connect4Web {
     const confidence = this.computeConfidence(game_mode, ai_mode, ai_depth);
 
     return {
-      user_id: 1,
       save_name: saveName,
       game_index: this.gameIndex,
       rows_count: this.rows,
@@ -2420,7 +2106,6 @@ class Connect4Web {
   }
 }
 
-// BOOT
 window.addEventListener("DOMContentLoaded", () => {
   const app = new Connect4Web();
   requestAnimationFrame(() => requestAnimationFrame(() => app.resizeCanvasReliable()));

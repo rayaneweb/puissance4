@@ -7,13 +7,14 @@ et les insère dans la table saved_games de PostgreSQL.
 
 Version :
 - minimax vs minimax uniquement
+- profondeur par défaut : 5 vs 5
 - choix aléatoire parmi les meilleurs coups minimax
 - pas de symétrie canonique pour éviter trop de doublons
 
 Usage :
     python bot_selfplay.py
-    python bot_selfplay.py --red-depth 4 --yellow-depth 4
-    python bot_selfplay.py --red-depth 6 --yellow-depth 4
+    python bot_selfplay.py --red-depth 5 --yellow-depth 5
+    python bot_selfplay.py --red-depth 6 --yellow-depth 5
     python bot_selfplay.py --start alt
     python bot_selfplay.py --no-skip-duplicates
 """
@@ -344,9 +345,9 @@ def compute_confidence(mode: int, ai_mode: str, ai_depth: int) -> int:
 def play_game(
     starting_color: str = RED,
     red_ai: str = "minimax",
-    red_depth: int = 4,
+    red_depth: int = 5,
     yellow_ai: str = "minimax",
-    yellow_depth: int = 4,
+    yellow_depth: int = 5,
 ) -> Tuple[List[int], Optional[str]]:
     board = create_board()
     moves: List[int] = []
@@ -490,8 +491,8 @@ def insert_game(
 # Boucle principale
 # ──────────────────────────────────────────────────────────────
 def run_bot(
-    red_depth: int = 4,
-    yellow_depth: int = 4,
+    red_depth: int = 5,
+    yellow_depth: int = 5,
     starting_color: str = RED,
     skip_duplicates: bool = True,
     verbose: bool = True,
@@ -529,8 +530,6 @@ def run_bot(
                 yellow_depth=cur_yellow_depth,
             )
 
-            # On garde les coups tels quels pour éviter que les parties miroir
-            # soient considérées comme doublons
             moves_to_store = moves
 
             if skip_duplicates and is_duplicate(conn, moves_to_store):
@@ -599,14 +598,14 @@ def parse_args():
     p.add_argument(
         "--red-depth",
         type=int,
-        default=4,
-        help="Profondeur minimax Rouge (défaut: 4)",
+        default=5,
+        help="Profondeur minimax Rouge (défaut: 5)",
     )
     p.add_argument(
         "--yellow-depth",
         type=int,
-        default=4,
-        help="Profondeur minimax Jaune (défaut: 4)",
+        default=5,
+        help="Profondeur minimax Jaune (défaut: 5)",
     )
     p.add_argument(
         "--start",
@@ -625,12 +624,11 @@ def parse_args():
 
 if __name__ == "__main__":
     args = parse_args()
-    starting = args.start if args.start in (RED, YELLOW) else RED
 
     run_bot(
         red_depth=args.red_depth,
         yellow_depth=args.yellow_depth,
-        starting_color=starting,
+        starting_color=args.start,
         skip_duplicates=not args.no_skip_duplicates,
         verbose=not args.quiet,
     )

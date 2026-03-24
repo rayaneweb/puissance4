@@ -9,16 +9,11 @@
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
-
-    <!-- noise texture overlay -->
     <div class="noise" aria-hidden="true"></div>
-    <!-- ambient glows -->
     <div class="ambient ambient--a" aria-hidden="true"></div>
     <div class="ambient ambient--b" aria-hidden="true"></div>
 
-    <!-- ══════════ TOPBAR ══════════ -->
     <header class="topbar">
-
       <div class="topbar-logo">
         <span class="logo-disc logo-disc--r"></span>
         <span class="logo-disc logo-disc--y"></span>
@@ -26,7 +21,6 @@
       </div>
 
       <nav class="topbar-controls">
-
         <div class="ctrl-block">
           <label class="ctrl-label" for="mode">Mode</label>
           <select id="mode" class="ctrl-select">
@@ -65,11 +59,9 @@
             <span class="toggle-txt">Sans chiffres</span>
           </label>
         </div>
-
       </nav>
 
       <div class="topbar-actions">
-
         <div class="players-row">
           <div class="player-tag player-tag--r">
             <span class="ptag-dot"></span>
@@ -90,6 +82,9 @@
           <button id="stop" type="button" class="btn btn--stop">
             <span class="btn-icon">▪</span> Stop
           </button>
+          <button id="analyzeBtn" type="button" class="btn btn--new">
+            <span class="btn-icon">🧠</span> Analyser
+          </button>
           <select id="saveMenu" class="ctrl-select ctrl-select--compact">
             <option value="">💾 Sauver…</option>
             <option value="json">Fichier JSON</option>
@@ -102,18 +97,11 @@
           </select>
           <input id="loadJson" type="file" accept=".json,application/json" hidden />
         </div>
-
       </div>
     </header>
 
-
-    <!-- ══════════ MAIN ══════════ -->
     <main class="main-grid">
-
-      <!-- ── BOARD COLUMN ── -->
       <section class="board-col">
-
-        <!-- Status -->
         <div class="status-band">
           <div id="status" class="status-text">—</div>
           <div class="status-meta">
@@ -121,20 +109,18 @@
           </div>
         </div>
 
-        <!-- Column widgets -->
+        <div id="prediction" class="status-text" style="margin:8px 0 12px 0;font-weight:700;">Prédiction : —</div>
+
         <div id="colLabels"  class="col-labels"></div>
         <div id="colButtons" class="col-buttons"></div>
         <div id="colScores"  class="col-scores"></div>
 
-        <!-- Board canvas -->
         <div class="board-frame" id="canvasWrap">
-          <!-- corner accents -->
           <i class="ca ca--tl"></i><i class="ca ca--tr"></i>
           <i class="ca ca--bl"></i><i class="ca ca--br"></i>
           <canvas id="board"></canvas>
         </div>
 
-        <!-- Replay -->
         <div class="replay-strip">
           <button id="firstMove" type="button" class="rep-btn" title="Début">⏮</button>
           <button id="prevMove"  type="button" class="rep-btn" title="Précédent">◀</button>
@@ -143,14 +129,9 @@
           <button id="lastMove" type="button" class="rep-btn" title="Fin">⏭</button>
           <input id="moveSlider" type="range" min="0" max="0" value="0" class="rep-slider" />
         </div>
-
       </section>
 
-
-      <!-- ── SIDE COLUMN ── -->
       <aside class="side-col">
-
-        <!-- Info card -->
         <div class="panel">
           <div class="panel-header">
             <span class="panel-title">Infos de partie</span>
@@ -169,7 +150,6 @@
           </p>
         </div>
 
-        <!-- Online card — même IDs que l'original pour compatibilité JS -->
         <div class="panel panel--online">
           <div class="panel-header">
             <span class="panel-title">Multijoueur en ligne</span>
@@ -189,7 +169,6 @@
           <div id="spectatorsInfo" style="font-size:11px;opacity:0.6;margin-top:4px;"></div>
         </div>
 
-        <!-- History card -->
         <div class="panel panel--history">
           <div class="panel-header">
             <span class="panel-title">Historique</span>
@@ -207,7 +186,6 @@
             </table>
           </div>
         </div>
-
       </aside>
     </main>
 

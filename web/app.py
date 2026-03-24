@@ -12,6 +12,7 @@ from psycopg2.extras import RealDictCursor
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
@@ -25,20 +26,13 @@ load_dotenv(os.path.join(BASE_DIR, ".env"))
 
 from ia_engine import (
     best_move,
+    predict_outcome,
     check_win_cells,
-    valid_columns,
-    drop_in_grid,
-    copy_grid,
     EMPTY,
     RED,
     YELLOW,
-    other,
     reload_model,
 )
-
-# ══════════════════════════════════════════════════════════════
-# DB
-# ══════════════════════════════════════════════════════════════
 
 
 def db_conn():
@@ -49,11 +43,9 @@ def db_conn():
     if url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql://", 1)
 
-    # Render / cloud
     if "render.com" in url or "amazonaws.com" in url:
         return psycopg2.connect(url, sslmode="require")
 
-    # Local
     return psycopg2.connect(url)
 
 
@@ -127,15 +119,11 @@ def init_db():
         conn.commit()
 
 
-# ══════════════════════════════════════════════════════════════
-# APP
-# ══════════════════════════════════════════════════════════════
-
 app = FastAPI(title="Puissance 4 Web API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # à restreindre plus tard si besoin
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -156,16 +144,17 @@ def health():
     return {"ok": True, "time": datetime.now(timezone.utc).isoformat()}
 
 
-# ══════════════════════════════════════════════════════════════
-# IA
-# ══════════════════════════════════════════════════════════════
-
-
 class AIMoveReq(BaseModel):
     board: List[List[str]]
     player: str = "R"
     ai_mode: str = "minimax"
     depth: int = 4
+
+
+class PredictReq(BaseModel):
+    board: List[List[str]]
+    player: str = "R"
+    depth: int = 8
 
 
 @app.post("/api/ai/move")
@@ -177,10 +166,27 @@ def ai_move(req: AIMoveReq):
 
     return {
         "col": result.get("col"),
-        "scores": result.get("scores", []),
+        "scores": result.get("scores", {}),
         "player": player,
         "ai_mode": req.ai_mode,
         "depth": depth,
+        "source": result.get("source"),
+    }
+
+
+@app.post("/api/predict")
+def api_predict(req: PredictReq):
+    player = req.player if req.player in (RED, YELLOW) else RED
+    depth = max(1, min(8, req.depth))
+    result = predict_outcome(req.board, player, depth=depth)
+    return result
+
+
+@app.get("/api/predict")
+def api_predict_get():
+    return {
+        "ok": False,
+        "message": "Utilise POST /api/predict avec un JSON {board, player, depth}",
     }
 
 
@@ -188,11 +194,6 @@ def ai_move(req: AIMoveReq):
 def ai_reload():
     ok = reload_model()
     return {"loaded": ok}
-
-
-# ══════════════════════════════════════════════════════════════
-# SAVED GAMES
-# ══════════════════════════════════════════════════════════════
 
 
 class SaveReq(BaseModel):
@@ -210,6 +211,8 @@ class SaveReq(BaseModel):
     player_red: Optional[str] = None
     player_yellow: Optional[str] = None
     confidence: int = 1
+    game_index: int = 1
+    distinct_cols: Optional[int] = None
 
 
 @app.post("/api/games")
@@ -310,23 +313,6 @@ def list_games():
             return cur.fetchall()
 
 
-@app.get("/api/games/stats")
-def games_stats():
-    with db_conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
-                SELECT
-                    COUNT(*) AS total,
-                    ROUND(AVG(jsonb_array_length(moves)), 1) AS avg_moves,
-                    MIN(jsonb_array_length(moves)) AS min_moves,
-                    MAX(jsonb_array_length(moves)) AS max_moves
-                FROM saved_games
-                """
-            )
-            return cur.fetchone()
-
-
 @app.get("/api/games/{game_id}")
 def get_game(game_id: int):
     with db_conn() as conn:
@@ -416,11 +402,6 @@ def game_position(req: dict):
         "filled_cells": sum(1 for row in board for cell in row if cell != EMPTY),
         "legal_cols": sum(1 for c in range(cols) if board[0][c] == EMPTY),
     }
-
-
-# ══════════════════════════════════════════════════════════════
-# BGA IMPORT
-# ══════════════════════════════════════════════════════════════
 
 
 class BGAReq(BaseModel):
@@ -523,11 +504,6 @@ def bga_import(req: BGAReq):
         "moves": moves,
         "cached": False,
     }
-
-
-# ══════════════════════════════════════════════════════════════
-# ONLINE MULTIPLAYER
-# ══════════════════════════════════════════════════════════════
 
 
 def _mk(rows, cols):
@@ -798,18 +774,15 @@ class RematchReq(BaseModel):
 
 @app.post("/api/online/{code}/rematch")
 def online_rematch(code: str, req: RematchReq):
-    """Reset an existing online game so both players can play again in the same room."""
     code = code.strip().upper()
 
     with db_conn() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            # Verify the game exists
             cur.execute("SELECT * FROM online_games WHERE code=%s FOR UPDATE", (code,))
             g = cur.fetchone()
             if not g:
                 raise HTTPException(404, "Partie introuvable")
 
-            # Verify the requester is a registered player (not spectator)
             cur.execute(
                 "SELECT * FROM online_players WHERE game_id=%s AND secret=%s",
                 (g["id"], req.player_secret),
@@ -820,14 +793,11 @@ def online_rematch(code: str, req: RematchReq):
             if p["token"] not in (RED, YELLOW):
                 raise HTTPException(403, "Spectateur ne peut pas relancer")
 
-            # Only allow rematch when game is finished (or aborted)
             if g["status"] not in ("finished", "aborted", "waiting"):
                 raise HTTPException(409, "La partie est encore en cours")
 
-            # Swap starting color for fairness (loser starts, or just swap)
             new_start = YELLOW if g["starting_color"] == RED else RED
 
-            # Reset the game state
             cur.execute(
                 """
                 UPDATE online_games
@@ -840,7 +810,6 @@ def online_rematch(code: str, req: RematchReq):
                 (new_start, new_start, g["id"]),
             )
 
-            # Delete all previous moves
             cur.execute("DELETE FROM online_moves WHERE game_id=%s", (g["id"],))
 
         conn.commit()
@@ -849,5 +818,31 @@ def online_rematch(code: str, req: RematchReq):
 
 
 PUBLIC_DIR = os.path.join(BASE_DIR, "public")
+
+
+@app.get("/")
+def serve_index():
+    index_path = os.path.join(PUBLIC_DIR, "index.html")
+    if not os.path.isfile(index_path):
+        raise HTTPException(500, "public/index.html introuvable")
+    return FileResponse(index_path)
+
+
 if os.path.isdir(PUBLIC_DIR):
-    app.mount("/", StaticFiles(directory=PUBLIC_DIR, html=True), name="public")
+    app.mount("/public", StaticFiles(directory=PUBLIC_DIR), name="public")
+
+
+@app.get("/{full_path:path}")
+def spa_fallback(full_path: str):
+    if full_path.startswith("api/"):
+        raise HTTPException(404, "Route API introuvable")
+
+    target = os.path.join(PUBLIC_DIR, full_path)
+    if os.path.isfile(target):
+        return FileResponse(target)
+
+    index_path = os.path.join(PUBLIC_DIR, "index.html")
+    if os.path.isfile(index_path):
+        return FileResponse(index_path)
+
+    raise HTTPException(404, "Fichier introuvable")
