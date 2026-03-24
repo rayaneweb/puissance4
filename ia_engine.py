@@ -581,9 +581,13 @@ def _minimax_with_distance(
 
     if maximizing:
         best_score = -(10**18)
-        best_dist = 999
+        best_dist = 10**9
+
         for col in cols:
-            drop_in_grid(grid, col, current)
+            pos = drop_in_grid(grid, col, current)
+            if not pos:
+                continue
+
             score, dist = _minimax_with_distance(
                 grid, depth - 1, alpha, beta, False, root_player, ply + 1
             )
@@ -592,6 +596,11 @@ def _minimax_with_distance(
             if score > best_score:
                 best_score = score
                 best_dist = dist
+            elif score == best_score:
+                if score > 900000:
+                    best_dist = min(best_dist, dist)
+                elif score < -900000:
+                    best_dist = max(best_dist, dist)
 
             alpha = max(alpha, best_score)
             if alpha >= beta:
@@ -599,40 +608,100 @@ def _minimax_with_distance(
 
         return best_score, best_dist
 
-    else:
-        best_score = 10**18
-        best_dist = 999
-        for col in cols:
-            drop_in_grid(grid, col, current)
-            score, dist = _minimax_with_distance(
-                grid, depth - 1, alpha, beta, True, root_player, ply + 1
-            )
-            undo_in_grid(grid, col)
+    best_score = 10**18
+    best_dist = 10**9
 
-            if score < best_score:
-                best_score = score
-                best_dist = dist
+    for col in cols:
+        pos = drop_in_grid(grid, col, current)
+        if not pos:
+            continue
 
-            beta = min(beta, best_score)
-            if alpha >= beta:
-                break
+        score, dist = _minimax_with_distance(
+            grid, depth - 1, alpha, beta, True, root_player, ply + 1
+        )
+        undo_in_grid(grid, col)
 
-        return best_score, best_dist
+        if score < best_score:
+            best_score = score
+            best_dist = dist
+        elif score == best_score:
+            if score > 900000:
+                best_dist = max(best_dist, dist)
+            elif score < -900000:
+                best_dist = min(best_dist, dist)
+
+        beta = min(beta, best_score)
+        if alpha >= beta:
+            break
+
+    return best_score, best_dist
+
+
+def _plies_to_turns(ply_distance: int):
+    if ply_distance is None:
+        return None
+    return max(1, (ply_distance + 1) // 2)
 
 
 def predict_outcome(board: list, player: str, depth: int = 8) -> dict:
     grid = copy_grid(board)
-    score, dist = _minimax_with_distance(
+
+    term, winner = terminal_state(grid)
+    if term:
+        return {
+            "winner": winner,
+            "moves": 0 if winner is not None else None,
+            "score": (
+                0 if winner is None else (1_000_000 if winner == player else -1_000_000)
+            ),
+        }
+
+    cols = valid_columns(grid)
+    if not cols:
+        return {"winner": None, "moves": None, "score": 0}
+
+    # 1) victoire immédiate du joueur courant
+    for col in cols:
+        pos = drop_in_grid(grid, col, player)
+        if pos:
+            if check_win_cells(grid, pos[0], pos[1], player):
+                undo_in_grid(grid, col)
+                return {"winner": player, "moves": 1, "score": 1_000_000}
+            undo_in_grid(grid, col)
+
+    # 2) victoire immédiate adverse au prochain coup
+    opp = other(player)
+    for col in cols:
+        pos = drop_in_grid(grid, col, opp)
+        if pos:
+            if check_win_cells(grid, pos[0], pos[1], opp):
+                undo_in_grid(grid, col)
+                return {"winner": opp, "moves": 1, "score": -1_000_000}
+            undo_in_grid(grid, col)
+
+    score, ply_dist = _minimax_with_distance(
         grid, depth, -(10**18), 10**18, True, player, 0
     )
 
-    if score > 900000:
-        return {"winner": player, "moves": dist, "score": score}
+    if score >= 900000:
+        return {
+            "winner": player,
+            "moves": _plies_to_turns(ply_dist),
+            "score": int(score),
+        }
 
-    if score < -900000:
-        return {"winner": other(player), "moves": dist, "score": score}
+    if score <= -900000:
+        return {
+            "winner": opp,
+            "moves": _plies_to_turns(ply_dist),
+            "score": int(score),
+        }
 
-    return {"winner": None, "moves": None, "score": score}
+    return {
+        "winner": None,
+        "moves": None,
+        "score": int(score),
+    }
 
 
 # ══════════════════════════════════════════════════════════════

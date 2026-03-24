@@ -369,10 +369,25 @@ class Connect4Web {
   const url = `${this.apiBase()}${path}`;
   console.log("API CALL =", url, opts?.method || "GET");
 
-  const res = await fetch(url, {
-    headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
-    ...opts,
-  });
+  const res = await fetch("/api/predict", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    board: board,
+    player: currentPlayer,
+    depth: aiDepth
+  })
+});
+
+const data = await res.json();
+
+predictionText.innerText = formatPrediction(data);
+
+// scores par colonne
+if (data.scores) {
+  columnScores = data.scores;
+  bestColumn = data.best_col;
+}
 
   let payload = null;
   try {
@@ -387,28 +402,62 @@ class Connect4Web {
 }
 
   async analyzePosition() {
-    if (!this.board || !this.el.prediction) return;
-    try {
-      const depth = this.clampInt(this.el.depth.value, 1, 8, 4);
-      const out = await this.apiFetch("/predict", {
-        method: "POST",
-        body: JSON.stringify({
-          board: this.board,
-          player: this.current,
-          depth,
-        }),
-      });
+  if (!this.board || !this.el.prediction) return;
 
-      if (out.winner === null) {
-        this.el.prediction.textContent = `Prédiction : position équilibrée (score ${Math.trunc(out.score)})`;
+  try {
+    const depth = this.clampInt(this.el.depth.value, 1, 8, 4);
+
+    const out = await this.apiFetch("/predict", {
+      method: "POST",
+      body: JSON.stringify({
+        board: this.board,
+        player: this.current,
+        depth,
+      }),
+    });
+
+    const score = Math.trunc(Number(out.score || 0));
+
+    if (out.winner === this.RED && out.moves != null) {
+      this.el.prediction.textContent =
+        `Prédiction : Rouge gagne en ${out.moves} coup(s)`;
+    } else if (out.winner === this.YELLOW && out.moves != null) {
+      this.el.prediction.textContent =
+        `Prédiction : Jaune gagne en ${out.moves} coup(s)`;
+    } else {
+      if (score > 50) {
+        this.el.prediction.textContent =
+          `Prédiction : avantage Rouge (score ${score})`;
+      } else if (score < -50) {
+        this.el.prediction.textContent =
+          `Prédiction : avantage Jaune (score ${score})`;
       } else {
-        const name = out.winner === this.RED ? "Rouge" : "Jaune";
-        this.el.prediction.textContent = `Prédiction : ${name} gagne dans ${out.moves} coup(s) (score ${Math.trunc(out.score)})`;
+        this.el.prediction.textContent =
+          `Prédiction : position équilibrée (score ${score})`;
       }
-    } catch (e) {
-      this.el.prediction.textContent = `Prédiction : erreur (${e?.message || e})`;
     }
+
+    if (out.scores && Array.isArray(this.scoreEls)) {
+      for (let c = 0; c < this.cols; c++) {
+        if (!(c in out.scores)) {
+          this.scoreEls[c].textContent = "N/A";
+          continue;
+        }
+
+        const v = Number(out.scores[c]);
+        if (v > 900000) {
+          this.scoreEls[c].textContent = "✓";
+        } else if (v < -900000) {
+          this.scoreEls[c].textContent = "✗";
+        } else {
+          this.scoreEls[c].textContent = String(Math.trunc(v));
+        }
+      }
+    }
+  } catch (e) {
+    this.el.prediction.textContent = `Prédiction : erreur (${e?.message || e})`;
   }
+}
 
   setOnlineBadge(text) {
     if (!this.el.onlineBadge) return;

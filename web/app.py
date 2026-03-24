@@ -178,8 +178,19 @@ def ai_move(req: AIMoveReq):
 def api_predict(req: PredictReq):
     player = req.player if req.player in (RED, YELLOW) else RED
     depth = max(1, min(8, req.depth))
-    result = predict_outcome(req.board, player, depth=depth)
-    return result
+
+    pred = predict_outcome(req.board, player, depth=depth)
+    bm = best_move(req.board, player, depth, "minimax")
+
+    return {
+        "winner": pred.get("winner"),
+        "moves": pred.get("moves"),
+        "score": pred.get("score"),
+        "scores": bm.get("scores", {}),
+        "best_col": bm.get("col"),
+        "player": player,
+        "depth": depth,
+    }
 
 
 @app.get("/api/predict")
