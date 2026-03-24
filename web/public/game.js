@@ -369,37 +369,26 @@ class Connect4Web {
   const url = `${this.apiBase()}${path}`;
   console.log("API CALL =", url, opts?.method || "GET");
 
-  const res = await fetch("/api/predict", {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({
-    board: board,
-    player: this.current,
-    depth: aiDepth
-  })
-});
-
-const data = await res.json();
-
-predictionText.innerText = formatPrediction(data);
-
-// scores par colonne
-if (data.scores) {
-  columnScores = data.scores;
-  bestColumn = data.best_col;
-}
+  const res = await fetch(url, {
+    headers: { "Content-Type": "application/json" },
+    ...opts,
+  });
 
   let payload = null;
   try {
     payload = await res.json();
-  } catch {}
+  } catch {
+    payload = null;
+  }
 
   if (!res.ok) {
     const msg = payload?.error || payload?.message || `HTTP ${res.status}`;
     throw new Error(msg);
   }
+
   return payload;
 }
+
 
   async analyzePosition() {
   if (!this.board || !this.el.prediction) return;
