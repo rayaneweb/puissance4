@@ -1327,19 +1327,41 @@ class Connect4Web {
   }
 
   applyPaintSettings() {
-    const next = this.el.paintNextPlayer?.value;
-    this.current = next === this.YELLOW ? this.YELLOW : this.RED;
-
-    this.moves = [];
-    this.viewIndex = this.countPaintTokens();
-    this.gameOver = false;
-    this.winner = null;
-    this.winningCells = [];
-
-    this.updateReplayUI();
-    this.afterStateChange(false);
+  // Vérifier la gravité
+  if (!this.isGravityValid()) {
+    alert("Position invalide : il y a des pions en l'air.");
+    return;
   }
 
+  const next = this.el.paintNextPlayer?.value;
+  this.current = next === this.YELLOW ? this.YELLOW : this.RED;
+
+  // On considère la position comme un début de partie
+  this.moves = [];
+  this.viewIndex = this.countPaintTokens();
+  this.gameOver = false;
+  this.winner = null;
+  this.winningCells = [];
+
+  // Quitter le mode peinture
+  this.setPaintMode(false);
+
+  this.updateReplayUI();
+  this.afterStateChange(false);
+}
+isGravityValid() {
+  for (let c = 0; c < this.cols; c++) {
+    let emptySeen = false;
+    for (let r = this.rows - 1; r >= 0; r--) {
+      if (this.board[r][c] === this.EMPTY) {
+        emptySeen = true;
+      } else if (emptySeen) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
   clearPaintBoard() {
     this.clearTimers();
     this.robotThinking = false;
@@ -1378,34 +1400,34 @@ class Connect4Web {
   }
 
     onCanvasClick(ev) {
-    if (this.paintMode) {
-      const cell = this.canvasToBoardCell(ev.clientX, ev.clientY);
-      if (!cell) return;
+  if (this.paintMode) {
+    const cell = this.canvasToBoardCell(ev.clientX, ev.clientY);
+    if (!cell) return;
 
-      const { row, col } = cell;
-      this.board[row][col] = this.paintValue;
+    const { row, col } = cell;
+    this.board[row][col] = this.paintValue;
 
-      this.gameOver = false;
-      this.winner = null;
-      this.winningCells = [];
+    this.gameOver = false;
+    this.winner = null;
+    this.winningCells = [];
 
-      const next = this.el.paintNextPlayer?.value;
-      this.current = next === this.YELLOW ? this.YELLOW : this.RED;
+    const next = this.el.paintNextPlayer?.value;
+    this.current = next === this.YELLOW ? this.YELLOW : this.RED;
 
-      this.viewIndex = this.countPaintTokens();
+    this.viewIndex = this.countPaintTokens();
 
-      this.drawBoard();
-      this.updateStatus();
-      this.updateSidePanel();
-      this.updateReplayUI();
-      this.analyzePosition();
-      return;
-    }
-
-    const col = this.canvasToBoardCol(ev.clientX, ev.clientY);
-    if (col === null) return;
-    this.onClick(col);
+    this.drawBoard();
+    this.updateStatus();
+    this.updateSidePanel();
+    this.updateReplayUI();
+    this.analyzePosition();
+    return;
   }
+
+  const col = this.canvasToBoardCol(ev.clientX, ev.clientY);
+  if (col === null) return;
+  this.onClick(col);
+}
 
   setupResponsiveCanvas() {
     try {
