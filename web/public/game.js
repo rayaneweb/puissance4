@@ -1326,8 +1326,7 @@ class Connect4Web {
     this.drawBoard();
   }
 
-  applyPaintSettings() {
-  // Vérifier la gravité
+applyPaintSettings() {
   if (!this.isGravityValid()) {
     alert("Position invalide : il y a des pions en l'air.");
     return;
@@ -1336,18 +1335,31 @@ class Connect4Web {
   const next = this.el.paintNextPlayer?.value;
   this.current = next === this.YELLOW ? this.YELLOW : this.RED;
 
-  // On considère la position comme un début de partie
+  // La position peinte devient la position actuelle jouable
+  this.viewIndex = 0;
   this.moves = [];
-  this.viewIndex = this.countPaintTokens();
+
   this.gameOver = false;
   this.winner = null;
   this.winningCells = [];
 
-  // Quitter le mode peinture
   this.setPaintMode(false);
 
+  this.drawBoard();
+  this.updateStatus();
+  this.updateSidePanel();
   this.updateReplayUI();
-  this.afterStateChange(false);
+  this.renderAiScores();
+  this.analyzePosition();
+  this.setButtonsState(true);
+
+  if (!this.online.enabled) {
+    const mode = parseInt(this.el.mode.value, 10);
+    if (!this.gameOver && !this.isHumanTurn(mode, this.current)) {
+      this.clearTimers();
+      this.schedule(() => this.robotStep(), 140);
+    }
+  }
 }
 isGravityValid() {
   for (let c = 0; c < this.cols; c++) {
