@@ -228,6 +228,7 @@ class Connect4Web {
       mode: document.getElementById("mode"),
       aiMode: document.getElementById("aiMode"),
       depth: document.getElementById("depth"),
+      startingPlayer: document.getElementById("startingPlayer"),
       noDigits: document.getElementById("noDigits"),
       saveName: document.getElementById("saveName"),
       analyzeBtn: document.getElementById("analyzeBtn"),
@@ -312,6 +313,15 @@ class Connect4Web {
     }
   }
 
+  getSelectedStartingPlayer() {
+  const v = this.el.startingPlayer?.value || "R";
+
+  if (v === "random") {
+    return Math.random() < 0.5 ? this.RED : this.YELLOW;
+  }
+
+  return v === this.YELLOW ? this.YELLOW : this.RED;
+}
   loadConfig() {
     return { rows: 9, cols: 9, starting_color: "R" };
   }
@@ -1826,7 +1836,7 @@ class Connect4Web {
     const cfg = this.loadConfig();
     this.rows = cfg.rows;
     this.cols = cfg.cols;
-    this.startingColor = cfg.starting_color;
+    this.startingColor = this.getSelectedStartingPlayer();
 
     if (newGame) this.gameIndex += 1;
 

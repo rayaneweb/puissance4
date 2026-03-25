@@ -45,6 +45,15 @@
         </div>
 
         <div class="ctrl-block">
+          <label class="ctrl-label" for="startingPlayer">Qui commence</label>
+          <select id="startingPlayer" class="ctrl-select">
+            <option value="R" selected>Rouge</option>
+            <option value="Y">Jaune</option>
+            <option value="random">Aléatoire</option>
+          </select>
+        </div>
+
+        <div class="ctrl-block">
           <label class="ctrl-label" for="saveName">Nom de sauvegarde</label>
           <input id="saveName" type="text" placeholder="partie_du_jour" class="ctrl-input" />
         </div>
@@ -111,9 +120,9 @@
 
         <div id="prediction" class="status-text" style="margin:8px 0 12px 0;font-weight:700;">Prédiction : —</div>
 
-        <div id="colLabels"  class="col-labels"></div>
+        <div id="colLabels" class="col-labels"></div>
         <div id="colButtons" class="col-buttons"></div>
-        <div id="colScores"  class="col-scores"></div>
+        <div id="colScores" class="col-scores"></div>
 
         <div class="board-frame" id="canvasWrap">
           <i class="ca ca--tl"></i><i class="ca ca--tr"></i>
@@ -123,7 +132,7 @@
 
         <div class="replay-strip">
           <button id="firstMove" type="button" class="rep-btn" title="Début">⏮</button>
-          <button id="prevMove"  type="button" class="rep-btn" title="Précédent">◀</button>
+          <button id="prevMove" type="button" class="rep-btn" title="Précédent">◀</button>
           <div id="moveLabel" class="rep-label">Coup 0 / 0</div>
           <button id="nextMove" type="button" class="rep-btn" title="Suivant">▶</button>
           <button id="lastMove" type="button" class="rep-btn" title="Fin">⏭</button>
@@ -160,11 +169,11 @@
             <input id="onlineCode" type="text" placeholder="Code de partie" class="ctrl-input ctrl-input--code" maxlength="16" autocomplete="off" />
           </div>
           <div class="online-actions">
-            <button id="onlineCreate"   type="button" class="btn btn--online">🚀 Créer</button>
-            <button id="onlineJoin"     type="button" class="btn btn--online-sec">🔗 Rejoindre</button>
+            <button id="onlineCreate" type="button" class="btn btn--online">🚀 Créer</button>
+            <button id="onlineJoin" type="button" class="btn btn--online-sec">🔗 Rejoindre</button>
             <button id="onlineCopyLink" type="button" class="btn btn--ghost-sm">📋 Copier lien</button>
-            <button id="onlineRematch"  type="button" class="btn btn--ghost-sm" style="display:none;">🔄 Relancer</button>
-            <button id="onlineLeave"    type="button" class="btn btn--danger-sm">✖ Quitter</button>
+            <button id="onlineRematch" type="button" class="btn btn--ghost-sm" style="display:none;">🔄 Relancer</button>
+            <button id="onlineLeave" type="button" class="btn btn--danger-sm">✖ Quitter</button>
           </div>
           <div id="spectatorsInfo" style="font-size:11px;opacity:0.6;margin-top:4px;"></div>
         </div>
