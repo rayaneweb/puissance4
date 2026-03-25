@@ -223,6 +223,8 @@ class Connect4Web {
 
     this.lastDrawGeom = null;
     this.hoverCol = null;
+    this.paintMode = false;
+    this.paintValue = this.RED;
 
     this.el = {
       mode: document.getElementById("mode"),
@@ -233,6 +235,14 @@ class Connect4Web {
       saveName: document.getElementById("saveName"),
       analyzeBtn: document.getElementById("analyzeBtn"),
       prediction: document.getElementById("prediction"),
+
+      paintToggle: document.getElementById("paintToggle"),
+      paintBar: document.getElementById("paintBar"),
+      paintBadge: document.getElementById("paintBadge"),
+      paintColor: document.getElementById("paintColor"),
+      paintNextPlayer: document.getElementById("paintNextPlayer"),
+      paintClear: document.getElementById("paintClear"),
+      paintFill: document.getElementById("paintFill"),
 
       nameR: document.getElementById("nameR"),
       nameY: document.getElementById("nameY"),
@@ -282,6 +292,7 @@ class Connect4Web {
 
       historyBody: document.getElementById("historyBody"),
       clearHistoryBtn: document.getElementById("clearHistory"),
+      
     };
 
     this.ctx = this.el.canvas.getContext("2d");
@@ -912,6 +923,29 @@ class Connect4Web {
     if (this.el.analyzeBtn) {
       this.el.analyzeBtn.addEventListener("click", () => this.analyzePosition());
     }
+        if (this.el.paintToggle) {
+      this.el.paintToggle.addEventListener("click", () => {
+        this.setPaintMode(!this.paintMode);
+      });
+    }
+
+    if (this.el.paintColor) {
+      this.el.paintColor.addEventListener("change", () => {
+        this.paintValue = this.el.paintColor.value || this.RED;
+      });
+    }
+
+    if (this.el.paintClear) {
+      this.el.paintClear.addEventListener("click", () => {
+        this.clearPaintBoard();
+      });
+    }
+
+    if (this.el.paintFill) {
+      this.el.paintFill.addEventListener("click", () => {
+        this.applyPaintSettings();
+      });
+    }
 
     this.el.mode.addEventListener("change", () => {
       if (this.online.enabled) return;
@@ -1097,6 +1131,10 @@ class Connect4Web {
   }
 
   setButtonsState(enabled) {
+        if (this.paintMode) {
+      for (const b of this.colBtnEls) b.disabled = true;
+      return;
+    }
     if (this.online.enabled) {
       const can =
         enabled &&
@@ -1240,7 +1278,86 @@ class Connect4Web {
     }
     return [];
   }
+  canvasToBoardCell(clientX, clientY) {
+    if (!this.lastDrawGeom) return null;
 
+    const wrapRect = this.el.canvasWrap.getBoundingClientRect();
+    const x = clientX - wrapRect.left;
+    const y = clientY - wrapRect.top;
+
+    const { x0, y0, boardW, boardH, cell } = this.lastDrawGeom;
+
+    if (x < x0 || x > x0 + boardW || y < y0 || y > y0 + boardH) return null;
+
+    const col = Math.floor((x - x0) / cell);
+    const row = Math.floor((y - y0) / cell);
+
+    if (row < 0 || row >= this.rows || col < 0 || col >= this.cols) return null;
+
+    return { row, col };
+  }
+
+  countPaintTokens() {
+    let n = 0;
+    for (let r = 0; r < this.rows; r++) {
+      for (let c = 0; c < this.cols; c++) {
+        if (this.board[r][c] !== this.EMPTY) n++;
+      }
+    }
+    return n;
+  }
+
+  setPaintMode(on) {
+    this.paintMode = !!on;
+
+    if (this.el.paintToggle) {
+      this.el.paintToggle.textContent = `🎨 Mode peinture : ${this.paintMode ? "ON" : "OFF"}`;
+    }
+
+    if (this.el.paintBar) {
+      this.el.paintBar.style.display = this.paintMode ? "" : "none";
+    }
+
+    if (this.el.paintBadge) {
+      this.el.paintBadge.textContent = this.paintMode ? "ON" : "OFF";
+    }
+
+    this.updateStatus();
+    this.drawBoard();
+  }
+
+  applyPaintSettings() {
+    const next = this.el.paintNextPlayer?.value;
+    this.current = next === this.YELLOW ? this.YELLOW : this.RED;
+
+    this.moves = [];
+    this.viewIndex = this.countPaintTokens();
+    this.gameOver = false;
+    this.winner = null;
+    this.winningCells = [];
+
+    this.updateReplayUI();
+    this.afterStateChange(false);
+  }
+
+  clearPaintBoard() {
+    this.clearTimers();
+    this.robotThinking = false;
+    this.aiLock = false;
+
+    this.board = this.createBoard();
+    this.moves = [];
+    this.viewIndex = 0;
+    this.gameOver = false;
+    this.winner = null;
+    this.winningCells = [];
+
+    const next = this.el.paintNextPlayer?.value;
+    this.current = next === this.YELLOW ? this.YELLOW : this.RED;
+
+    this.updateReplayUI();
+    this.afterStateChange(false);
+  }
   canvasToBoardCol(clientX, clientY) {
     if (!this.lastDrawGeom) return null;
     const wrapRect = this.el.canvasWrap.getBoundingClientRect();
@@ -1260,7 +1377,31 @@ class Connect4Web {
     this.drawBoard();
   }
 
-  onCanvasClick(ev) {
+    onCanvasClick(ev) {
+    if (this.paintMode) {
+      const cell = this.canvasToBoardCell(ev.clientX, ev.clientY);
+      if (!cell) return;
+
+      const { row, col } = cell;
+      this.board[row][col] = this.paintValue;
+
+      this.gameOver = false;
+      this.winner = null;
+      this.winningCells = [];
+
+      const next = this.el.paintNextPlayer?.value;
+      this.current = next === this.YELLOW ? this.YELLOW : this.RED;
+
+      this.viewIndex = this.countPaintTokens();
+
+      this.drawBoard();
+      this.updateStatus();
+      this.updateSidePanel();
+      this.updateReplayUI();
+      this.analyzePosition();
+      return;
+    }
+
     const col = this.canvasToBoardCol(ev.clientX, ev.clientY);
     if (col === null) return;
     this.onClick(col);
@@ -1402,6 +1543,9 @@ class Connect4Web {
 
   updateStatus() {
     let msg = "";
+        if (this.paintMode) {
+      msg += "🎨 Mode peinture actif — ";
+    }
 
     if (this.online.enabled) {
       const code = this.online.code || "—";
@@ -1643,6 +1787,7 @@ class Connect4Web {
   }
 
   onClick(col) {
+        if (this.paintMode) return;
     if (this.gameOver || this.robotThinking || this.aiLock) return;
 
     if (this.online.enabled) {
@@ -1818,6 +1963,7 @@ class Connect4Web {
     this.clearTimers();
     this.robotThinking = false;
     this.aiLock = false;
+    this.setPaintMode(false);
 
     if (newGame) {
       this.clearHistory();
@@ -1931,6 +2077,7 @@ class Connect4Web {
     this.clearTimers();
     this.robotThinking = false;
     this.aiLock = false;
+    this.setPaintMode(false);
 
     const rows = data.rows;
     const cols = data.cols;

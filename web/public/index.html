@@ -5,7 +5,10 @@
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>Puissance 4</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap"
+      rel="stylesheet"
+    />
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
@@ -41,7 +44,14 @@
 
         <div class="ctrl-block ctrl-block--thin">
           <label class="ctrl-label" for="depth">Profondeur</label>
-          <input id="depth" type="number" min="1" max="8" value="4" class="ctrl-input ctrl-input--num" />
+          <input
+            id="depth"
+            type="number"
+            min="1"
+            max="8"
+            value="4"
+            class="ctrl-input ctrl-input--num"
+          />
         </div>
 
         <div class="ctrl-block">
@@ -55,7 +65,12 @@
 
         <div class="ctrl-block">
           <label class="ctrl-label" for="saveName">Nom de sauvegarde</label>
-          <input id="saveName" type="text" placeholder="partie_du_jour" class="ctrl-input" />
+          <input
+            id="saveName"
+            type="text"
+            placeholder="partie_du_jour"
+            class="ctrl-input"
+          />
         </div>
 
         <div class="ctrl-block ctrl-block--toggle">
@@ -94,16 +109,23 @@
           <button id="analyzeBtn" type="button" class="btn btn--new">
             <span class="btn-icon">🧠</span> Analyser
           </button>
+
+          <button id="paintToggle" type="button" class="btn btn--online-sec">
+            🎨 Mode peinture : OFF
+          </button>
+
           <select id="saveMenu" class="ctrl-select ctrl-select--compact">
             <option value="">💾 Sauver…</option>
             <option value="json">Fichier JSON</option>
             <option value="db">Base de données</option>
           </select>
+
           <select id="loadMenu" class="ctrl-select ctrl-select--compact">
             <option value="">📂 Charger…</option>
             <option value="json">Fichier JSON</option>
             <option value="db">Base de données</option>
           </select>
+
           <input id="loadJson" type="file" accept=".json,application/json" hidden />
         </div>
       </div>
@@ -118,7 +140,61 @@
           </div>
         </div>
 
-        <div id="prediction" class="status-text" style="margin:8px 0 12px 0;font-weight:700;">Prédiction : —</div>
+        <div
+          id="prediction"
+          class="status-text"
+          style="margin:8px 0 12px 0;font-weight:700;"
+        >
+          Prédiction : —
+        </div>
+
+        <div
+          id="paintBar"
+          class="panel"
+          style="margin-bottom:12px;padding:12px;display:none;"
+        >
+          <div class="panel-header" style="margin-bottom:10px;">
+            <span class="panel-title">Mode peinture</span>
+            <span id="paintBadge" class="panel-badge">OFF</span>
+          </div>
+
+          <div
+            style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;"
+          >
+            <div class="ctrl-block" style="margin:0;">
+              <label class="ctrl-label" for="paintColor">Peindre</label>
+              <select id="paintColor" class="ctrl-select">
+                <option value="R" selected>🔴 Rouge</option>
+                <option value="Y">🟡 Jaune</option>
+                <option value=".">⚪ Vide</option>
+              </select>
+            </div>
+
+            <div class="ctrl-block" style="margin:0;">
+              <label class="ctrl-label" for="paintNextPlayer">Joueur suivant</label>
+              <select id="paintNextPlayer" class="ctrl-select">
+                <option value="R" selected>Rouge</option>
+                <option value="Y">Jaune</option>
+              </select>
+            </div>
+
+            <div
+              style="display:flex;align-items:end;gap:8px;flex-wrap:wrap;"
+            >
+              <button id="paintClear" type="button" class="btn btn--danger-sm">
+                🧹 Vider le plateau
+              </button>
+              <button id="paintFill" type="button" class="btn btn--ghost-sm">
+                ✨ Appliquer
+              </button>
+            </div>
+          </div>
+
+          <p class="panel-note" style="margin-top:10px;">
+            En mode peinture, clique directement sur une case du plateau pour
+            mettre un pion rouge, jaune ou effacer une case.
+          </p>
+        </div>
 
         <div id="colLabels" class="col-labels"></div>
         <div id="colButtons" class="col-buttons"></div>
@@ -136,7 +212,14 @@
           <div id="moveLabel" class="rep-label">Coup 0 / 0</div>
           <button id="nextMove" type="button" class="rep-btn" title="Suivant">▶</button>
           <button id="lastMove" type="button" class="rep-btn" title="Fin">⏭</button>
-          <input id="moveSlider" type="range" min="0" max="0" value="0" class="rep-slider" />
+          <input
+            id="moveSlider"
+            type="range"
+            min="0"
+            max="0"
+            value="0"
+            class="rep-slider"
+          />
         </div>
       </section>
 
@@ -147,15 +230,16 @@
             <span class="panel-badge">LIVE</span>
           </div>
           <dl class="info-dl">
-            <dt>Lignes</dt>     <dd id="rowsVal">—</dd>
-            <dt>Colonnes</dt>   <dd id="colsVal">—</dd>
-            <dt>Commence</dt>   <dd id="startVal">—</dd>
-            <dt>Partie #</dt>   <dd id="gameIndexVal">—</dd>
+            <dt>Lignes</dt><dd id="rowsVal">—</dd>
+            <dt>Colonnes</dt><dd id="colsVal">—</dd>
+            <dt>Commence</dt><dd id="startVal">—</dd>
+            <dt>Partie #</dt><dd id="gameIndexVal">—</dd>
             <dt>Coups joués</dt><dd id="movesVal">—</dd>
             <dt>Vue au coup</dt><dd id="viewVal">—</dd>
           </dl>
           <p class="panel-note">
-            En mode <strong>minimax</strong>, les scores d'évaluation s'affichent sous chaque colonne en temps réel.
+            En mode <strong>minimax</strong>, les scores d'évaluation s'affichent
+            sous chaque colonne en temps réel.
           </p>
         </div>
 
@@ -166,13 +250,27 @@
           </div>
           <div class="online-fields">
             <input id="onlineName" type="text" placeholder="Ton pseudo" class="ctrl-input" />
-            <input id="onlineCode" type="text" placeholder="Code de partie" class="ctrl-input ctrl-input--code" maxlength="16" autocomplete="off" />
+            <input
+              id="onlineCode"
+              type="text"
+              placeholder="Code de partie"
+              class="ctrl-input ctrl-input--code"
+              maxlength="16"
+              autocomplete="off"
+            />
           </div>
           <div class="online-actions">
             <button id="onlineCreate" type="button" class="btn btn--online">🚀 Créer</button>
             <button id="onlineJoin" type="button" class="btn btn--online-sec">🔗 Rejoindre</button>
             <button id="onlineCopyLink" type="button" class="btn btn--ghost-sm">📋 Copier lien</button>
-            <button id="onlineRematch" type="button" class="btn btn--ghost-sm" style="display:none;">🔄 Relancer</button>
+            <button
+              id="onlineRematch"
+              type="button"
+              class="btn btn--ghost-sm"
+              style="display:none;"
+            >
+              🔄 Relancer
+            </button>
             <button id="onlineLeave" type="button" class="btn btn--danger-sm">✖ Quitter</button>
           </div>
           <div id="spectatorsInfo" style="font-size:11px;opacity:0.6;margin-top:4px;"></div>
@@ -187,8 +285,12 @@
             <table class="hist-table">
               <thead>
                 <tr>
-                  <th>Joueur</th><th>Action</th><th>Partie</th>
-                  <th>Coup</th><th>Col.</th><th>Quand</th>
+                  <th>Joueur</th>
+                  <th>Action</th>
+                  <th>Partie</th>
+                  <th>Coup</th>
+                  <th>Col.</th>
+                  <th>Quand</th>
                 </tr>
               </thead>
               <tbody id="historyBody"></tbody>
