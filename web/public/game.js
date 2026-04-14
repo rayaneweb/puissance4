@@ -670,150 +670,98 @@ class Connect4Web {
 async updatePrediction() {
   if (!this.el.predictionText) return;
 
+  const reqId = ++this.predictionReqId;
+
   if (!this.board) {
     this.setPredictionText("Prédiction : ...");
+    this._lastPredictionText = "Prédiction : ...";
+    return;
+  }
+
+  const hasAnyMove = this.board.some(row => row.some(cell => cell !== this.EMPTY));
+  if (!hasAnyMove) {
+    this.setPredictionText("Prédiction : ...");
+    this._lastPredictionText = "Prédiction : ...";
     return;
   }
 
   if (this.gameOver) {
+    let text = "Prédiction : Match nul";
+
     if (this.winner === this.RED) {
-      this.setPredictionText("Prédiction : Rouge a gagné");
+      text = "Prédiction : Rouge a gagné";
     } else if (this.winner === this.YELLOW) {
-      this.setPredictionText("Prédiction : Jaune a gagné");
-    } else {
-      this.setPredictionText("Prédiction : Match nul");
+      text = "Prédiction : Jaune a gagné";
     }
+
+    this.setPredictionText(text);
+    this._lastPredictionText = text;
     return;
   }
 
-  const reqId = ++this.predictionReqId;
+  this.setPredictionText("Prédiction : calcul...");
 
   try {
-    const depth = this.clampInt(this.el.depth?.value, 1, 12, 4);
-
-    const predictedPlayer = this.inferCurrentPlayerFromBoard();
-
     const data = await this.requestPrediction({
       board: this.board,
-      player: predictedPlayer,
-      depth,
+      player: this.current,
+      depth: this.clampInt(this.el.depth?.value, 1, 8, 4),
     });
 
     if (reqId !== this.predictionReqId) return;
 
-    const winner = this.normalizePredictionWinner(data?.winner);
-    const exact = !!data?.exact;
+    let text = "Prédiction : incertaine";
 
-    const moves = Number.isInteger(data?.moves)
-      ? data.moves
-      : parseInt(data?.moves, 10);
+    const normalizedWinner = this.normalizePredictionWinner(data?.winner);
 
-    const score = typeof data?.score === "number"
-      ? Math.trunc(data.score)
-      : parseInt(data?.score, 10);
-
-    const bestCol = Number.isInteger(data?.best_col)
-      ? data.best_col
-      : parseInt(data?.best_col, 10);
-
-    const currentName = predictedPlayer === this.RED ? "Rouge" : "Jaune";
-    const opponent = this.other(predictedPlayer);
-    const opponentName = opponent === this.RED ? "Rouge" : "Jaune";
-
-    const scoreIsFinite = Number.isFinite(score);
-
-    let advantagedPlayer = null;
-    if (scoreIsFinite) {
-      if (score > 0) advantagedPlayer = predictedPlayer;
-      else if (score < 0) advantagedPlayer = opponent;
-    }
-
-    let positionType = "incertaine";
-    let dangerText = "";
-    let resultText = "";
-    let advantageText = "";
-    let bestMoveText = "";
-    let scoreText = scoreIsFinite ? `score ${score}` : "";
-
-    if (winner === predictedPlayer && exact) {
-      positionType = "victoire potentielle";
-      resultText = Number.isInteger(moves) && moves >= 0
-        ? `${currentName} gagne dans ${moves} coup(s)`
-        : `${currentName} a une victoire forcée`;
-      dangerText = `${opponentName} est en difficulté`;
-    } else if (winner === opponent && exact) {
-      positionType = "défaite potentielle";
-      resultText = Number.isInteger(moves) && moves >= 0
-        ? `${opponentName} gagne dans ${moves} coup(s)`
-        : `${opponentName} a une victoire forcée`;
-      dangerText = `${currentName} est en difficulté`;
-    } else if (winner === predictedPlayer && !exact) {
-      positionType = "avantage";
-      resultText = Number.isInteger(moves) && moves >= 0
-        ? `${currentName} devrait gagner dans environ ${moves} coup(s)`
-        : `${currentName} a une meilleure position`;
-      dangerText = `${opponentName} est sous pression`;
-    } else if (winner === opponent && !exact) {
-      positionType = "avantage";
-      resultText = Number.isInteger(moves) && moves >= 0
-        ? `${opponentName} devrait gagner dans environ ${moves} coup(s)`
-        : `${opponentName} a une meilleure position`;
-      dangerText = `${currentName} est sous pression`;
-    } else if (winner === null) {
-      if (scoreIsFinite) {
-        if (score >= 350) {
-          positionType = "avantage";
-          resultText = `${currentName} a l'avantage`;
-          dangerText = `${opponentName} est en difficulté`;
-        } else if (score <= -350) {
-          positionType = "avantage";
-          resultText = `${opponentName} a l'avantage`;
-          dangerText = `${currentName} est en difficulté`;
-        } else if (Math.abs(score) <= 120) {
-          positionType = "nul / équilibrée";
-          resultText = "aucun gagnant forcé vu";
-          dangerText = "position équilibrée";
+    if (normalizedWinner === null) {
+      if (typeof data?.score === "number") {
+        if (data.score > 0) {
+          text = "Prédiction : Rouge a l'avantage";
+        } else if (data.score < 0) {
+          text = "Prédiction : Jaune a l'avantage";
         } else {
-          positionType = "incertaine";
-          resultText = "léger avantage, mais rien de forcé";
-          dangerText = "issue encore ouverte";
+          text = "Prédiction : position équilibrée";
         }
       } else {
-        positionType = "incertaine";
-        resultText = "analyse insuffisante";
-        dangerText = "issue encore ouverte";
+        text = "Prédiction : incertaine";
       }
-    } else {
-      positionType = "incertaine";
-      resultText = "issue encore ouverte";
+    } else if (normalizedWinner === this.RED || normalizedWinner === this.YELLOW) {
+      const winnerName = normalizedWinner === this.RED ? "Rouge" : "Jaune";
+      const moves = Number.isInteger(data?.moves) ? data.moves : data?.mateIn;
+
+      if (Number.isInteger(moves)) {
+        text = `Prédiction : ${winnerName} gagne dans ${moves} coup(s)`;
+      } else {
+        text = `Prédiction : avantage à ${winnerName}`;
+      }
+    } else if (typeof data?.score === "number") {
+      if (data.score > 0) {
+        text = "Prédiction : Rouge a l'avantage";
+      } else if (data.score < 0) {
+        text = "Prédiction : Jaune a l'avantage";
+      } else {
+        text = "Prédiction : position équilibrée";
+      }
     }
 
-    if (advantagedPlayer === this.RED) {
-      advantageText = "avantage Rouge";
-    } else if (advantagedPlayer === this.YELLOW) {
-      advantageText = "avantage Jaune";
-    }
+    if (reqId !== this.predictionReqId) return;
 
-    if (this.isHumanTurn(predictedPlayer) && Number.isInteger(bestCol) && bestCol >= 0) {
-      bestMoveText = `Meilleur coup conseillé : colonne ${bestCol + 1}${
-        scoreIsFinite ? `, poids ${score}` : ""
-      }`;
-    }
-
-    const parts = [`Prédiction : ${positionType}`];
-    if (advantageText) parts.push(advantageText);
-    if (resultText) parts.push(resultText);
-    if (dangerText) parts.push(dangerText);
-    if (scoreText) parts.push(scoreText);
-    if (bestMoveText) parts.push(bestMoveText);
-
-    this.setPredictionText(parts.join(" | "));
+    this.setPredictionText(text);
+    this._lastPredictionText = text;
   } catch (e) {
     if (reqId !== this.predictionReqId) return;
-    console.error("Erreur /predict :", e);
-    this.setPredictionText(`Prédiction : erreur (${e?.message || e})`);
+    this.setPredictionText("Prédiction : indisponible");
+    this._lastPredictionText = "Prédiction : indisponible";
   }
-}  async onlinePlay(col) {
+}
+resetPredictionDisplay() {
+  if (!this.el.predictionText) return;
+  this.predictionReqId++;
+  this._lastPredictionText = "Prédiction : ...";
+  this.setPredictionText("Prédiction : ...");
+}
+async onlinePlay(col) {
     if (!this.online.enabled || !this.online.code || !this.online.token) return;
     if (this.online.moveInFlight) return;
 
@@ -858,22 +806,24 @@ async updatePrediction() {
   }
 
   resetLocalBoardOnly() {
-    this.clearTimers();
-    this.robotThinking = false;
-    this.aiLock = false;
+  this.clearTimers();
+  this.robotThinking = false;
+  this.aiLock = false;
 
-    this.board = this.createBoard();
-    this.moves = [];
-    this.viewIndex = 0;
-    this.current = this.startingColor;
-    this.gameOver = false;
-    this.winner = null;
-    this.winningCells = [];
+  this.board = this.createBoard();
+  this.moves = [];
+  this.viewIndex = 0;
+  this.current = this.startingColor;
+  this.gameOver = false;
+  this.winner = null;
+  this.winningCells = [];
 
-    this.rebuildColumnWidgets();
-    this.afterStateChange(false);
-    this.resizeCanvasReliable();
-  }
+  this.resetPredictionDisplay();
+
+  this.rebuildColumnWidgets();
+  this.afterStateChange(false);
+  this.resizeCanvasReliable();
+}
 
   getOnlinePlayerNameByToken(token) {
     const p = Array.isArray(this.online.players)
@@ -1815,11 +1765,9 @@ async updatePrediction() {
   }
 
   setPredictionText(text) {
-    if (!this.el.predictionText) return;
-    const t = text || "Prédiction : ...";
-    this.el.predictionText.textContent = t;
-    this._lastPredictionText = t;
-  }
+  if (!this.el.predictionText) return;
+  this.el.predictionText.textContent = text;
+}
 
   // ===== AI SCORES
   setScoresBlank() {
@@ -2640,48 +2588,50 @@ async updatePrediction() {
     this.afterStateChange(false);
   }
 
-  resetGame(newGame = true) {
-    this.clearTimers();
-    this.robotThinking = false;
-    this.aiLock = false;
-    this.paintMode = false;
-    this.paintColor = this.el.paintColor?.value || this.EMPTY;
-    this.updatePaintUI();
+ resetGame(newGame = true) {
+  this.clearTimers();
+  this.robotThinking = false;
+  this.aiLock = false;
+  this.paintMode = false;
+  this.paintColor = this.el.paintColor?.value || this.EMPTY;
+  this.updatePaintUI();
 
-    if (newGame) {
-      this.clearHistory();
-      this.ensureDefaultSaveName();
-      this.pushHistory({
-        player: "system",
-        type: "new",
-        game: this.gameIndex + 1,
-        move: 0,
-        col: "-",
-        when: Date.now(),
-      });
-      this.renderHistory();
-    }
-
-    const cfg = this.loadConfig();
-    this.rows = cfg.rows;
-    this.cols = cfg.cols;
-    this.startingColor = cfg.starting_color;
-
-    if (newGame) this.gameIndex += 1;
-
-    this.board = this.createBoard();
-    this.current = this.startingColor;
-    this.gameOver = false;
-    this.winner = null;
-    this.winningCells = [];
-
-    this.moves = [];
-    this.viewIndex = 0;
-
-    this.rebuildColumnWidgets();
-    this.afterStateChange(true);
-    this.resizeCanvasReliable();
+  if (newGame) {
+    this.clearHistory();
+    this.ensureDefaultSaveName();
+    this.pushHistory({
+      player: "system",
+      type: "new",
+      game: this.gameIndex + 1,
+      move: 0,
+      col: "-",
+      when: Date.now(),
+    });
+    this.renderHistory();
   }
+
+  const cfg = this.loadConfig();
+  this.rows = cfg.rows;
+  this.cols = cfg.cols;
+  this.startingColor = cfg.starting_color;
+
+  if (newGame) this.gameIndex += 1;
+
+  this.board = this.createBoard();
+  this.current = this.startingColor;
+  this.gameOver = false;
+  this.winner = null;
+  this.winningCells = [];
+
+  this.moves = [];
+  this.viewIndex = 0;
+
+  this.resetPredictionDisplay();
+
+  this.rebuildColumnWidgets();
+  this.afterStateChange(true);
+  this.resizeCanvasReliable();
+}
 
   // ===== JSON SAVE/LOAD
   buildSavePayload(saveName) {
