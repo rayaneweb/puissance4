@@ -279,12 +279,16 @@ class Connect4Web {
   }
 
   apiBase() {
-    const isLocalStatic =
-      location.port === "5500" || location.port === "5501" || location.port === "5502";
+    const { protocol, hostname, port } = window.location;
 
-    if (isLocalStatic) {
-      return "http://127.0.0.1:8000/api";
+    if (port === "8000") {
+      return "/api";
     }
+
+    if (hostname === "127.0.0.1" || hostname === "localhost") {
+      return `${protocol}//${hostname}:8000/api`;
+    }
+
     return "/api";
   }
 
@@ -572,59 +576,65 @@ class Connect4Web {
     const reqId = ++this.predictionReqId;
 
     try {
-      const aiMode = this.el.aiMode?.value || "minimax";
-      const depth = this.clampInt(this.el.depth?.value, 1, 12, 4);
+      const depth = this.clampInt(this.el.depth?.value, 1, 8, 4);
 
       const data = await this.apiFetch("/predict", {
         method: "POST",
         body: JSON.stringify({
-          grid: this.board,
+          board: this.board,
           player: this.current,
-          ai_mode: aiMode,
-          depth: depth,
+          depth,
         }),
       });
 
       if (reqId !== this.predictionReqId) return;
 
-      if (typeof data?.text === "string" && data.text.trim()) {
-        this.setPredictionText(data.text.trim());
-        return;
-      }
-
       const winner = data?.winner;
-      const movesToWin =
-        Number.isInteger(data?.moves_to_win)
-          ? data.moves_to_win
-          : parseInt(data?.moves_to_win, 10);
+      const moves =
+        Number.isInteger(data?.moves) ? data.moves : parseInt(data?.moves, 10);
+      const score =
+        typeof data?.score === "number"
+          ? Math.trunc(data.score)
+          : parseInt(data?.score, 10);
 
       if (winner === this.RED || winner === "R") {
-        if (Number.isInteger(movesToWin) && movesToWin >= 0) {
+        if (Number.isInteger(moves) && moves >= 0) {
           this.setPredictionText(
-            `Prédiction : Rouge gagne dans ${movesToWin} ${movesToWin > 1 ? "coups" : "coup"}`
+            `Prédiction : Rouge gagne dans ${moves} coup(s)${Number.isFinite(score) ? ` (score ${score})` : ""}`
           );
         } else {
-          this.setPredictionText("Prédiction : Rouge va gagner");
+          this.setPredictionText(
+            `Prédiction : Rouge va gagner${Number.isFinite(score) ? ` (score ${score})` : ""}`
+          );
         }
         return;
       }
 
       if (winner === this.YELLOW || winner === "Y") {
-        if (Number.isInteger(movesToWin) && movesToWin >= 0) {
+        if (Number.isInteger(moves) && moves >= 0) {
           this.setPredictionText(
-            `Prédiction : Jaune gagne dans ${movesToWin} ${movesToWin > 1 ? "coups" : "coup"}`
+            `Prédiction : Jaune gagne dans ${moves} coup(s)${Number.isFinite(score) ? ` (score ${score})` : ""}`
           );
         } else {
-          this.setPredictionText("Prédiction : Jaune va gagner");
+          this.setPredictionText(
+            `Prédiction : Jaune va gagner${Number.isFinite(score) ? ` (score ${score})` : ""}`
+          );
         }
         return;
       }
 
-      this.setPredictionText("Prédiction : Match nul ou position incertaine");
+      if (winner === null) {
+        this.setPredictionText(
+          `Prédiction : position équilibrée${Number.isFinite(score) ? ` (score ${score})` : ""}`
+        );
+        return;
+      }
+
+      this.setPredictionText("Prédiction : position incertaine");
     } catch (e) {
       if (reqId !== this.predictionReqId) return;
       console.error("Erreur /predict :", e);
-      this.setPredictionText("Prédiction : indisponible");
+      this.setPredictionText(`Prédiction : erreur (${e?.message || e})`);
     }
   }
 
@@ -645,7 +655,10 @@ class Connect4Web {
       const name = this.getOnlineName();
       const out = await this.apiFetch("/online/join", {
         method: "POST",
-        body: JSON.stringify({ room_code: code, player_name: name }),
+        body: JSON.stringify({
+          code,
+          player_name: name,
+        }),
       });
 
       this.onlineSaveSession(out.code, out.player_secret, out.your_token);
@@ -683,9 +696,8 @@ class Connect4Web {
       await this.apiFetch(`/online/${this.online.code}/move`, {
         method: "POST",
         body: JSON.stringify({
-          room_code: this.online.code,
+          player_secret: this.online.secret,
           col,
-          player: this.online.token,
         }),
       });
     } finally {
@@ -2018,13 +2030,13 @@ class Connect4Web {
     this.setScoresBlank();
 
     try {
-      const data = await this.apiFetch("/best_move", {
+      const data = await this.apiFetch("/ai/move", {
         method: "POST",
         body: JSON.stringify({
-          grid: this.board,
+          board: this.board,
           player: this.current,
           ai_mode: aiMode,
-          depth: depth,
+          depth: this.clampInt(depth, 1, 8, 4),
         }),
       });
 
@@ -2080,7 +2092,7 @@ class Connect4Web {
     this.setButtonsState(false);
 
     const aiMode = (this.el.aiMode?.value || "random").toLowerCase();
-    const depth = this.clampInt(this.el.depth?.value, 1, 12, 4);
+    const depth = this.clampInt(this.el.depth?.value, 1, 8, 4);
 
     if (aiMode === "random") {
       const col = this.robotRandomColumn(this.board);
@@ -2110,7 +2122,6 @@ class Connect4Web {
       return;
     }
 
-    // fallback
     await this.robotPlayBackendAsync("minimax", depth);
   }
 
@@ -2206,7 +2217,7 @@ class Connect4Web {
       moves: this.moves,
       view_index: this.viewIndex,
       ai_mode: this.el.aiMode?.value || "random",
-      ai_depth: this.clampInt(this.el.depth?.value, 1, 12, 4),
+      ai_depth: this.clampInt(this.el.depth?.value, 1, 8, 4),
       player_red: this.getNameForToken(this.RED),
       player_yellow: this.getNameForToken(this.YELLOW),
     };
@@ -2318,7 +2329,7 @@ class Connect4Web {
       const allowed = ["random", "minimax", "trained", "hybrid"];
       this.el.aiMode.value = allowed.includes(data.ai_mode) ? data.ai_mode : "random";
     }
-    if (this.el.depth) this.el.depth.value = String(this.clampInt(data.ai_depth, 1, 12, 4));
+    if (this.el.depth) this.el.depth.value = String(this.clampInt(data.ai_depth, 1, 8, 4));
 
     if (typeof data.save_name === "string" && data.save_name.trim()) {
       if (this.el.saveName) this.el.saveName.value = data.save_name.trim();
@@ -2368,7 +2379,7 @@ class Connect4Web {
   // ===== DB SAVE/LOAD
   computeConfidence(controlRed, controlYellow, aiMode, aiDepth) {
     aiMode = (aiMode || "random").toLowerCase();
-    aiDepth = this.clampInt(aiDepth, 1, 12, 4);
+    aiDepth = this.clampInt(aiDepth, 1, 8, 4);
 
     const aiCount = (controlRed === "ai" ? 1 : 0) + (controlYellow === "ai" ? 1 : 0);
 
@@ -2389,7 +2400,7 @@ class Connect4Web {
     const control_yellow = this.getControlYellow();
     const game_mode = this.getDerivedGameMode();
     const ai_mode = (this.el.aiMode?.value || "random").toLowerCase();
-    const ai_depth = this.clampInt(this.el.depth?.value, 1, 12, 4);
+    const ai_depth = this.clampInt(this.el.depth?.value, 1, 8, 4);
     const status = this.gameOver ? "completed" : "in_progress";
 
     let winner = null;
