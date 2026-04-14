@@ -1,13 +1,12 @@
 # ia_engine.py — Moteur IA Puissance 4
 # Partagé entre game.py (desktop) et app.py (web)
-# Modes : random / trained / minimax / hybrid / lose
+# Modes : random / trained / minimax / hybrid
 # Version renforcée :
 # - iterative deepening
 # - time control
 # - transposition table
 # - move ordering
 # - prédiction améliorée (gagnant + nombre de coups estimé)
-# - meilleur coup plus fiable
 
 import random
 import os
@@ -1088,15 +1087,13 @@ def _iterative_search(
 # ══════════════════════════════════════════════════════════════
 # PREDICTION
 # ══════════════════════════════════════════════════════════════
-
-
 def _ply_to_moves(ply):
     if ply is None:
         return None
     return (ply + 1) // 2
 
 
-def _prediction_limits(board: list, depth: int, time_limit_ms: int) -> tuple[int, int]:
+def _prediction_limits(board: list, depth: int, time_limit_ms: int):
     remaining = sum(1 for row in board for cell in row if cell == EMPTY)
 
     if remaining <= 12:
@@ -1107,27 +1104,6 @@ def _prediction_limits(board: list, depth: int, time_limit_ms: int) -> tuple[int
         return max(depth, 14), max(time_limit_ms, 2500)
 
     return max(1, min(depth, 16)), max(500, time_limit_ms)
-
-
-def _is_tactical_position(board: list, player: str) -> bool:
-    opp = other(player)
-
-    if _find_immediate_winning_move(board, player) is not None:
-        return True
-    if _find_immediate_winning_move(board, opp) is not None:
-        return True
-
-    if _count_immediate_wins(board, player) >= 2:
-        return True
-    if _count_immediate_wins(board, opp) >= 2:
-        return True
-
-    if _count_potential_threes(board, player) >= 2:
-        return True
-    if _count_potential_threes(board, opp) >= 2:
-        return True
-
-    return False
 
 
 def predict_outcome(
@@ -1169,14 +1145,13 @@ def predict_outcome(
 
         immediate_wins = _find_all_immediate_wins(copy_grid(board), player)
         if immediate_wins:
-            best_col = immediate_wins[0]
             return {
                 "winner": player,
                 "mateIn": 1,
                 "moves": 1,
                 "score": WIN_SCORE - 1,
                 "depth_reached": 1,
-                "best_col": best_col,
+                "best_col": immediate_wins[0],
                 "best_moves": immediate_wins,
                 "source": "winning_move",
                 "exact": True,
@@ -1265,73 +1240,6 @@ def predict_outcome(
                 estimated_ply = 7
             else:
                 estimated_ply = max(8, 18 - depth_reached)
-
-        if not exact and _is_tactical_position(board, player):
-            verify_depth = min(42, max(safe_depth + 4, 12))
-            verify_time = min(12000, max(safe_time + 1500, 3500))
-
-            verify = _iterative_search(
-                board=copy_grid(board),
-                player=player,
-                depth=verify_depth,
-                time_limit_ms=verify_time,
-            )
-
-            vcol = verify.get("col")
-            vscores = verify.get("scores", {}) or {}
-            vdistances = verify.get("distances", {}) or {}
-            vdepth = int(verify.get("depth_reached", depth_reached))
-            if vcol is not None:
-                vscore = int(vscores.get(vcol, score))
-                vdist = vdistances.get(vcol)
-
-                vbest_moves = [c for c, s in vscores.items() if s == vscore]
-                if not vbest_moves:
-                    vbest_moves = [vcol]
-                vbest_moves = sorted(
-                    set(vbest_moves), key=lambda c: (abs(c - center), c)
-                )
-
-                if (
-                    abs(vscore) >= abs(score)
-                    or vdist is not None
-                    or vdepth > depth_reached
-                ):
-                    best_col = vbest_moves[0]
-                    best_moves = vbest_moves
-                    score = vscore
-                    dist = vdist
-                    depth_reached = vdepth
-                    source = f"verify_{verify.get('source', 'iterative')}"
-
-                    if score >= WIN_SCORE - verify_depth - 2:
-                        predicted_winner = player
-                        exact = True
-                    elif score <= -(WIN_SCORE - verify_depth - 2):
-                        predicted_winner = opp
-                        exact = True
-                    else:
-                        exact = False
-                        if score >= 350:
-                            predicted_winner = player
-                        elif score <= -350:
-                            predicted_winner = opp
-                        else:
-                            predicted_winner = None
-
-                    if dist is not None:
-                        estimated_ply = dist
-                    elif predicted_winner is not None:
-                        if abs(score) >= 7000:
-                            estimated_ply = 3
-                        elif abs(score) >= 3500:
-                            estimated_ply = 5
-                        elif abs(score) >= 1500:
-                            estimated_ply = 7
-                        else:
-                            estimated_ply = max(8, 18 - depth_reached)
-                    else:
-                        estimated_ply = None
 
         return {
             "winner": predicted_winner,
