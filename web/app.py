@@ -249,6 +249,45 @@ def api_ai_move(payload: AIMoveRequest):
         )
 
 
+@app.post("/api/predict")
+def api_predict(payload: PredictRequest):
+    validate_board(payload.board)
+
+    # On force une recherche plus forte pour le web
+    depth = max(1, min(int(payload.depth), 20))
+
+    try:
+        result = predict_outcome(
+            board=payload.board,
+            player=payload.player,
+            depth=depth,
+            time_limit_ms=8000,
+        )
+
+        return {
+            "winner": result.get("winner"),
+            "moves": result.get("moves"),
+            "mateIn": result.get("mateIn"),
+            "score": result.get("score", 0),
+            "depth_reached": result.get("depth_reached", 0),
+            "best_col": result.get("best_col"),
+            "source": result.get("source", "predict"),
+            "exact": bool(result.get("exact", False)),
+        }
+    except Exception as e:
+        print(f"[app] /api/predict error: {e}")
+        return {
+            "winner": None,
+            "moves": None,
+            "mateIn": None,
+            "score": 0,
+            "depth_reached": 0,
+            "best_col": None,
+            "source": f"error:{type(e).__name__}",
+            "exact": False,
+        }
+
+
 @app.get("/api/predict")
 def api_predict_get(board: str, player: str, depth: int = 4):
     try:
@@ -261,14 +300,14 @@ def api_predict_get(board: str, player: str, depth: int = 4):
     if player not in ("R", "Y"):
         raise HTTPException(status_code=400, detail="player invalide")
 
-    depth = max(1, min(int(depth), 12))
+    depth = max(1, min(int(depth), 20))
 
     try:
         result = predict_outcome(
             board=parsed_board,
             player=player,
             depth=depth,
-            time_limit_ms=1800,
+            time_limit_ms=8000,
         )
 
         return {

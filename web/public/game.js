@@ -210,19 +210,24 @@ class Connect4Web {
   }
 
   inferCurrentPlayerFromBoard() {
-    let red = 0;
-    let yellow = 0;
+  if (!this.board) return this.startingColor;
 
-    for (let r = 0; r < this.rows; r++) {
-      for (let c = 0; c < this.cols; c++) {
-        if (this.board[r][c] === this.RED) red++;
-        else if (this.board[r][c] === this.YELLOW) yellow++;
-      }
+  let red = 0;
+  let yellow = 0;
+
+  for (let r = 0; r < this.rows; r++) {
+    for (let c = 0; c < this.cols; c++) {
+      if (this.board[r][c] === this.RED) red++;
+      else if (this.board[r][c] === this.YELLOW) yellow++;
     }
-
-    return red <= yellow ? this.RED : this.YELLOW;
   }
 
+  const total = red + yellow;
+
+  return total % 2 === 0
+    ? this.startingColor
+    : this.other(this.startingColor);
+}
   detectWinnerOnBoard() {
     for (let r = 0; r < this.rows; r++) {
       for (let c = 0; c < this.cols; c++) {
@@ -686,9 +691,11 @@ async updatePrediction() {
   try {
     const depth = this.clampInt(this.el.depth?.value, 1, 12, 4);
 
+    const predictedPlayer = this.inferCurrentPlayerFromBoard();
+
     const data = await this.requestPrediction({
       board: this.board,
-      player: this.current,
+      player: predictedPlayer,
       depth,
     });
 
@@ -709,15 +716,15 @@ async updatePrediction() {
       ? data.best_col
       : parseInt(data?.best_col, 10);
 
-    const currentName = this.current === this.RED ? "Rouge" : "Jaune";
-    const opponent = this.other(this.current);
+    const currentName = predictedPlayer === this.RED ? "Rouge" : "Jaune";
+    const opponent = this.other(predictedPlayer);
     const opponentName = opponent === this.RED ? "Rouge" : "Jaune";
 
     const scoreIsFinite = Number.isFinite(score);
 
     let advantagedPlayer = null;
     if (scoreIsFinite) {
-      if (score > 0) advantagedPlayer = this.current;
+      if (score > 0) advantagedPlayer = predictedPlayer;
       else if (score < 0) advantagedPlayer = opponent;
     }
 
@@ -728,7 +735,7 @@ async updatePrediction() {
     let bestMoveText = "";
     let scoreText = scoreIsFinite ? `score ${score}` : "";
 
-    if (winner === this.current && exact) {
+    if (winner === predictedPlayer && exact) {
       positionType = "victoire potentielle";
       resultText = Number.isInteger(moves) && moves >= 0
         ? `${currentName} gagne dans ${moves} coup(s)`
@@ -740,7 +747,7 @@ async updatePrediction() {
         ? `${opponentName} gagne dans ${moves} coup(s)`
         : `${opponentName} a une victoire forcée`;
       dangerText = `${currentName} est en difficulté`;
-    } else if (winner === this.current && !exact) {
+    } else if (winner === predictedPlayer && !exact) {
       positionType = "avantage";
       resultText = Number.isInteger(moves) && moves >= 0
         ? `${currentName} devrait gagner dans environ ${moves} coup(s)`
@@ -787,7 +794,7 @@ async updatePrediction() {
       advantageText = "avantage Jaune";
     }
 
-    if (this.isHumanTurn(this.current) && Number.isInteger(bestCol) && bestCol >= 0) {
+    if (this.isHumanTurn(predictedPlayer) && Number.isInteger(bestCol) && bestCol >= 0) {
       bestMoveText = `Meilleur coup conseillé : colonne ${bestCol + 1}${
         scoreIsFinite ? `, poids ${score}` : ""
       }`;
@@ -1480,31 +1487,31 @@ async updatePrediction() {
   }
 
   navigateTo(index) {
-    if (this.online.enabled) {
-      alert("Online: replay désactivé (synchro en direct).");
-      return;
-    }
-
-    const total = this.moves.length;
-    index = Math.max(0, Math.min(total, index));
-    this.viewIndex = index;
-
-    this.clearTimers();
-    this.robotThinking = false;
-    this.aiLock = false;
-
-    this.board = this.reconstructBoard(this.viewIndex);
-    this.current = this.tokenForMoveIndex(this.viewIndex);
-
-    this.winningCells = [];
-    this.winner = null;
-    this.gameOver = false;
-
-    this.drawBoard();
-    this.updateStatus();
-    this.updateReplayUI();
-    this.updatePrediction();
+  if (this.online.enabled) {
+    alert("Online: replay désactivé (synchro en direct).");
+    return;
   }
+
+  const total = this.moves.length;
+  index = Math.max(0, Math.min(total, index));
+  this.viewIndex = index;
+
+  this.clearTimers();
+  this.robotThinking = false;
+  this.aiLock = false;
+
+  this.board = this.reconstructBoard(this.viewIndex);
+  this.current = this.inferCurrentPlayerFromBoard();
+
+  this.winningCells = [];
+  this.winner = null;
+  this.gameOver = false;
+
+  this.drawBoard();
+  this.updateStatus();
+  this.updateReplayUI();
+  this.updatePrediction();
+}
 
   // ===== GAME CORE
   createBoard() {
@@ -2836,7 +2843,7 @@ async updatePrediction() {
       if (!lastPos) break;
     }
 
-    this.current = this.tokenForMoveIndex(this.viewIndex);
+    this.current = this.inferCurrentPlayerFromBoard();
 
     if (lastPos && lastToken) {
       const [rr, cc] = lastPos;
