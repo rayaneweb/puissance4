@@ -591,16 +591,21 @@ class Connect4Web {
 
     const winner = this.normalizePredictionWinner(data?.winner);
     const moves = Number.isInteger(data?.moves) ? data.moves : parseInt(data?.moves, 10);
-    const score = typeof data?.score === "number" ? Math.trunc(data.score) : parseInt(data?.score, 10);
+    const score =
+      typeof data?.score === "number" ? Math.trunc(data.score) : parseInt(data?.score, 10);
 
     if (winner === this.RED) {
       if (Number.isInteger(moves) && moves >= 0) {
         this.setPredictionText(
-          `Prédiction : Rouge gagne dans ${moves} coup(s)${Number.isFinite(score) ? ` (score ${score})` : ""}`
+          `Prédiction : Rouge gagne dans ${moves} coup(s)${
+            Number.isFinite(score) ? ` (score ${score})` : ""
+          }`
         );
       } else {
         this.setPredictionText(
-          `Prédiction : Rouge va gagner${Number.isFinite(score) ? ` (score ${score})` : ""}`
+          `Prédiction : Rouge va gagner${
+            Number.isFinite(score) ? ` (score ${score})` : ""
+          }`
         );
       }
       return;
@@ -609,20 +614,47 @@ class Connect4Web {
     if (winner === this.YELLOW) {
       if (Number.isInteger(moves) && moves >= 0) {
         this.setPredictionText(
-          `Prédiction : Jaune gagne dans ${moves} coup(s)${Number.isFinite(score) ? ` (score ${score})` : ""}`
+          `Prédiction : Jaune gagne dans ${moves} coup(s)${
+            Number.isFinite(score) ? ` (score ${score})` : ""
+          }`
         );
       } else {
         this.setPredictionText(
-          `Prédiction : Jaune va gagner${Number.isFinite(score) ? ` (score ${score})` : ""}`
+          `Prédiction : Jaune va gagner${
+            Number.isFinite(score) ? ` (score ${score})` : ""
+          }`
         );
       }
       return;
     }
 
     if (winner === null) {
-      this.setPredictionText(
-        `Prédiction : position équilibrée${Number.isFinite(score) ? ` (score ${score})` : ""}`
-      );
+      if (Number.isFinite(score)) {
+        const advantagedPlayer =
+          score > 0
+            ? this.current
+            : score < 0
+            ? this.other(this.current)
+            : null;
+
+        if (score > 2000) {
+          this.setPredictionText(
+            `Prédiction : avantage ${
+              advantagedPlayer === this.RED ? "Rouge" : "Jaune"
+            } (score ${score})`
+          );
+        } else if (score < -2000) {
+          this.setPredictionText(
+            `Prédiction : avantage ${
+              advantagedPlayer === this.RED ? "Rouge" : "Jaune"
+            } (score ${score})`
+          );
+        } else {
+          this.setPredictionText(`Prédiction : position équilibrée (score ${score})`);
+        }
+      } else {
+        this.setPredictionText("Prédiction : position incertaine");
+      }
       return;
     }
 

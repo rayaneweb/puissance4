@@ -1095,17 +1095,6 @@ def predict_outcome(
     depth: int = 12,
     time_limit_ms: int = 1800,
 ) -> dict:
-    """
-    Retourne :
-    {
-        "winner": RED / YELLOW / None,
-        "moves": nombre de demi-coups jusqu'à la fin probable ou None,
-        "score": score de la position pour player,
-        "depth_reached": profondeur réellement atteinte,
-        "best_col": meilleure colonne estimée,
-        "source": source de la prédiction
-    }
-    """
     term, winner = terminal_state(board)
     if term:
         return {
@@ -1142,12 +1131,22 @@ def predict_outcome(
                 "source": "opponent_winning_move",
             }
 
-    result = _iterative_search(
-        board=copy_grid(board),
-        player=player,
-        depth=max(1, min(depth, 16)),
-        time_limit_ms=time_limit_ms,
-    )
+    # Si peu de coups restants → calcul beaucoup plus profond
+    remaining = len(valid_columns(board)) * len(board)
+    if remaining <= 20:
+        result = _iterative_search(
+            board=copy_grid(board),
+            player=player,
+            depth=42,
+            time_limit_ms=10000,
+        )
+    else:
+        result = _iterative_search(
+            board=copy_grid(board),
+            player=player,
+            depth=max(1, min(depth, 16)),
+            time_limit_ms=time_limit_ms,
+        )
 
     col = result.get("col")
     scores = result.get("scores", {})

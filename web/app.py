@@ -177,9 +177,13 @@ def ai_move(req: AIMoveReq):
 @app.post("/api/predict")
 def api_predict(req: PredictReq):
     player = req.player if req.player in (RED, YELLOW) else RED
-    depth = max(1, min(12, req.depth))
 
-    pred = predict_outcome(req.board, player, depth=depth)
+    # profondeur max + temps long
+    depth = 20  # au lieu de 12
+
+    pred = predict_outcome(
+        req.board, player, depth=depth, time_limit_ms=5000  # 5 secondes
+    )
 
     return {
         "winner": pred.get("winner"),
