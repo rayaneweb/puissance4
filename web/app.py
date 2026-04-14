@@ -289,7 +289,7 @@ def api_predict(payload: PredictRequest):
 
 
 @app.get("/api/predict")
-def api_predict_get(board: str, player: str, depth: int = 4):
+def api_predict_get(board: str, player: str, depth: int = 8):
     try:
         parsed_board = json.loads(board)
     except Exception:
@@ -300,7 +300,8 @@ def api_predict_get(board: str, player: str, depth: int = 4):
     if player not in ("R", "Y"):
         raise HTTPException(status_code=400, detail="player invalide")
 
-    depth = max(1, min(int(depth), 20))
+    # profondeur minimale plus grande pour voir les gains avant le dernier coup
+    depth = max(8, min(int(depth), 20))
 
     try:
         result = predict_outcome(
@@ -310,16 +311,22 @@ def api_predict_get(board: str, player: str, depth: int = 4):
             time_limit_ms=8000,
         )
 
+        winner = result.get("winner")
+        moves = result.get("moves")
+        mate_in = result.get("mateIn")
+        score = result.get("score", 0)
+
         return {
-            "winner": result.get("winner"),
-            "moves": result.get("moves"),
-            "mateIn": result.get("mateIn"),
-            "score": result.get("score", 0),
-            "depth_reached": result.get("depth_reached", 0),
+            "winner": winner,
+            "moves": moves,
+            "mateIn": mate_in,
+            "score": score,
+            "depth_reached": result.get("depth_reached", depth),
             "best_col": result.get("best_col"),
             "source": result.get("source", "predict"),
             "exact": bool(result.get("exact", False)),
         }
+
     except Exception as e:
         print(f"[app] /api/predict GET error: {e}")
         return {

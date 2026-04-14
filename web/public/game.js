@@ -701,50 +701,43 @@ async updatePrediction() {
     const data = await this.requestPrediction({
       board: this.board,
       player: this.current,
-      depth: this.clampInt(this.el.depth?.value, 1, 8, 4),
+      depth: Math.max(8, this.clampInt(this.el.depth?.value, 1, 12, 8)),
     });
 
     if (reqId !== this.predictionReqId) return;
 
     let text = "Prédiction : incertaine";
 
-    const rawWinner = data?.winner;
-    const rawMoves = data?.moves;
-    const rawMateIn = data?.mateIn;
-    const rawScore = data?.score;
-
-    let winner = undefined;
-    if (rawWinner === "R" || rawWinner === this.RED || rawWinner === "red" || rawWinner === "RED") {
-      winner = this.RED;
-    } else if (rawWinner === "Y" || rawWinner === this.YELLOW || rawWinner === "yellow" || rawWinner === "YELLOW") {
-      winner = this.YELLOW;
-    } else if (rawWinner === null || rawWinner === undefined || rawWinner === "draw" || rawWinner === "DRAW" || rawWinner === "D") {
-      winner = null;
-    }
-
+    const winner = this.normalizePredictionWinner(data?.winner);
     const moves =
-      Number.isInteger(rawMoves) ? rawMoves :
-      Number.isInteger(rawMateIn) ? rawMateIn :
+      Number.isInteger(data?.moves) ? data.moves :
+      Number.isInteger(data?.mateIn) ? data.mateIn :
       null;
+    const score = typeof data?.score === "number" ? data.score : null;
 
     if (winner === this.RED || winner === this.YELLOW) {
       const winnerName = winner === this.RED ? "Rouge" : "Jaune";
-
       if (moves !== null) {
         text = `Prédiction : ${winnerName} gagne dans ${moves} coup(s)`;
       } else {
-        text = `Prédiction : avantage à ${winnerName}`;
+        text = `Prédiction : avantage décisif pour ${winnerName}`;
       }
-    } else if (typeof rawScore === "number") {
-      if (rawScore > 0) {
+    } else if (score !== null) {
+      if (score >= 900000) {
+        text = "Prédiction : Rouge devrait gagner";
+      } else if (score <= -900000) {
+        text = "Prédiction : Jaune devrait gagner";
+      } else if (score > 3000) {
+        text = "Prédiction : Rouge a un gros avantage";
+      } else if (score > 300) {
         text = "Prédiction : Rouge a l'avantage";
-      } else if (rawScore < 0) {
+      } else if (score < -3000) {
+        text = "Prédiction : Jaune a un gros avantage";
+      } else if (score < -300) {
         text = "Prédiction : Jaune a l'avantage";
       } else {
         text = "Prédiction : position équilibrée";
       }
-    } else {
-      text = "Prédiction : incertaine";
     }
 
     if (reqId !== this.predictionReqId) return;
