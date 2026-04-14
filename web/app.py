@@ -308,7 +308,7 @@ def api_ai_move_get(board: str, player: str, ai_mode: str = "minimax", depth: in
     if player not in ("R", "Y"):
         raise HTTPException(status_code=400, detail="player invalide")
 
-    depth = max(1, min(int(depth), 12))
+    depth = max(1, min(int(depth), 6))
     ai_mode = (ai_mode or "minimax").lower()
 
     try:

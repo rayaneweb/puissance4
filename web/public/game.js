@@ -704,87 +704,81 @@ async updatePrediction() {
       ),
     ]);
 
-  const valids = this.validColumns(this.board);
+  const current = this.current;
+  const opp = this.other(current);
 
-  const fallbackBestCol = (() => {
-    if (!valids.length) return null;
-    const center = Math.floor(this.cols / 2);
-    return valids.reduce((best, c) =>
-      Math.abs(c - center) < Math.abs(best - center) ? c : best
-    , valids[0]);
-  })();
-
-  let bestCol = fallbackBestCol;
-  let bestWeight = 0;
-  let moveSource = null;
-
-  // Étape 1 : affichage immédiat
-  if (bestCol !== null) {
+  // 1) vérification tactique locale immédiate
+  const immediateWin = this.findImmediateWinningMoveLocal(this.board, current);
+  if (immediateWin !== null) {
+    const winnerName = current === this.RED ? "Rouge" : "Jaune";
     this.setPredictionText(
-      `Prédiction : analyse... — meilleur coup : colonne ${bestCol + 1} (poids 0)`
+      `Prédiction : ${winnerName} gagne dans 1 coup — meilleur coup : colonne ${immediateWin + 1} — coup gagnant`
     );
-  } else {
-    this.setPredictionText("Prédiction : analyse...");
+    return;
   }
 
-  // Étape 2 : meilleur coup rapide
+  const immediateBlock = this.findImmediateBlockingMoveLocal(this.board, current);
+  if (immediateBlock !== null) {
+    const oppName = opp === this.RED ? "Rouge" : "Jaune";
+    this.setPredictionText(
+      `Prédiction : ${oppName} menace de gagner — meilleur coup : colonne ${immediateBlock + 1} — blocage obligatoire`
+    );
+    return;
+  }
+
+  this.setPredictionText("Prédiction : analyse...");
+
+  let bestCol = null;
+  let bestWeight = null;
+  let moveSource = null;
+
+  // 2) meilleur coup backend
   try {
-    const quickParams = new URLSearchParams({
+    const params = new URLSearchParams({
       board: JSON.stringify(this.board),
-      player: this.current,
+      player: current,
       ai_mode: "minimax",
-      depth: "4",
+      depth: "5",
     });
 
     const moveData = await withTimeout(
-      this.apiFetch(`/ai/move?${quickParams.toString()}`, {
+      this.apiFetch(`/ai/move?${params.toString()}`, {
         method: "GET",
       }),
-      1800,
+      2500,
       "ai move timeout"
     );
 
     if (reqId !== this.predictionReqId) return;
 
-    const col =
+    bestCol =
       Number.isInteger(moveData?.col) ? moveData.col :
       Number.isInteger(moveData?.best_col) ? moveData.best_col :
       null;
 
-    if (col !== null) bestCol = col;
     moveSource = moveData?.source || null;
 
     const scores = moveData?.scores || {};
     if (bestCol !== null && Object.prototype.hasOwnProperty.call(scores, bestCol)) {
       const raw = Number(scores[bestCol]);
-      if (!Number.isNaN(raw)) bestWeight = raw;
-    }
-
-    if (bestCol !== null) {
-      let quickText =
-        `Prédiction : analyse en cours — meilleur coup : colonne ${bestCol + 1} (poids ${Math.round(bestWeight)})`;
-
-      if (moveSource === "winning_move") {
-        quickText += " — coup gagnant";
-      } else if (moveSource === "blocking_move") {
-        quickText += " — coup défensif important";
+      if (!Number.isNaN(raw)) {
+        bestWeight = raw;
       }
-
-      this.setPredictionText(quickText);
     }
+
   } catch (e) {
     console.warn("best move error:", e);
   }
 
   if (reqId !== this.predictionReqId) return;
 
-  // Étape 3 : prédiction plus profonde pour voir les gains lointains
+  // 3) prédiction backend
   try {
     const pred = await withTimeout(
       this.requestPrediction({
         board: this.board,
-        player: this.current,
-        depth: 10,   // <- plus profond pour voir 8, 10, 12 coups...
+        player: current,
+        depth: 10,
       }),
       9000,
       "predict timeout"
@@ -797,7 +791,7 @@ async updatePrediction() {
       Number.isInteger(pred?.moves) ? pred.moves :
       Number.isInteger(pred?.mateIn) ? pred.mateIn :
       null;
-    const score = typeof pred?.score === "number" ? pred.score : 0;
+    const score = typeof pred?.score === "number" ? pred.score : null;
     const exact = !!pred?.exact;
 
     let text = "Prédiction : ";
@@ -812,25 +806,25 @@ async updatePrediction() {
       } else {
         text += `avantage décisif pour ${name}`;
       }
-    } else {
+    } else if (score !== null) {
       if (score > 0) {
         text += `Rouge a l'avantage (score ${Math.round(score)})`;
       } else if (score < 0) {
         text += `Jaune a l'avantage (score ${Math.round(score)})`;
       } else {
-        text += "position équilibrée (score 0)";
+        text += "position équilibrée";
       }
+    } else {
+      text += "position incertaine";
     }
 
-    if (bestCol === null) {
-      bestCol = fallbackBestCol;
-    }
-    if (bestWeight === null || bestWeight === undefined) {
-      bestWeight = 0;
-    }
-
+    // on affiche le meilleur coup seulement si on a un vrai résultat
     if (bestCol !== null) {
-      text += ` — meilleur coup : colonne ${bestCol + 1} (poids ${Math.round(bestWeight)})`;
+      text += ` — meilleur coup : colonne ${bestCol + 1}`;
+
+      if (bestWeight !== null) {
+        text += ` (poids ${Math.round(bestWeight)})`;
+      }
 
       if (moveSource === "winning_move") {
         text += " — coup gagnant";
@@ -842,18 +836,41 @@ async updatePrediction() {
     this.setPredictionText(text);
 
   } catch (e) {
-    console.warn("deep prediction error:", e);
+    console.warn("prediction error:", e);
 
     if (reqId !== this.predictionReqId) return;
 
+    // 4) fallback propre : pas de faux poids 0 / faux centre
     if (bestCol !== null) {
-      this.setPredictionText(
-        `Prédiction : position incertaine — meilleur coup : colonne ${bestCol + 1} (poids ${Math.round(bestWeight)})`
-      );
+      let text = `Prédiction : analyse partielle — meilleur coup : colonne ${bestCol + 1}`;
+      if (bestWeight !== null) {
+        text += ` (poids ${Math.round(bestWeight)})`;
+      }
+      this.setPredictionText(text);
     } else {
       this.setPredictionText("Prédiction : indisponible");
     }
   }
+}
+findImmediateWinningMoveLocal(board, player) {
+  const valids = this.validColumns(board);
+
+  for (const col of valids) {
+    const test = this.copyGrid(board);
+    const pos = this.dropToken(test, col, player);
+    if (!pos) continue;
+
+    const cells = this.checkWinCells(test, pos[0], pos[1], player);
+    if (cells && cells.length) {
+      return col;
+    }
+  }
+
+  return null;
+}
+findImmediateBlockingMoveLocal(board, player) {
+  const opp = this.other(player);
+  return this.findImmediateWinningMoveLocal(board, opp);
 }
 resetPredictionDisplay() {
   if (!this.el.predictionText) return;
