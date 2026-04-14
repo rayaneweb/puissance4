@@ -2,19 +2,14 @@ import os
 import sys
 import json
 import secrets
-import base64
-import io
 import re as _re
 import urllib.request as _req2
 from datetime import datetime, timezone
 from typing import Optional, List
 
-import numpy as np
-from PIL import Image
-
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -32,14 +27,29 @@ load_dotenv(os.path.join(BASE_DIR, ".env"))
 from ia_engine import (
     best_move,
     predict_outcome,
-    analyze_position,
-    explain_move,
     check_win_cells,
     EMPTY,
     RED,
     YELLOW,
     reload_model,
 )
+
+
+def runtime_env() -> str:
+    env = (
+        os.environ.get("APP_ENV")
+        or os.environ.get("NODE_ENV")
+        or (
+            "production"
+            if os.environ.get("RENDER") or os.environ.get("DATABASE_URL")
+            else "local"
+        )
+    )
+    return env.lower()
+
+
+def storage_backend() -> str:
+    return "postgres" if os.environ.get("DATABASE_URL") else "indexeddb"
 
 
 def db_conn():
@@ -151,6 +161,15 @@ def health():
     return {"ok": True, "time": datetime.now(timezone.utc).isoformat()}
 
 
+@app.get("/api/config")
+def app_config():
+    return {
+        "env": runtime_env(),
+        "storage": storage_backend(),
+        "has_database": bool(os.environ.get("DATABASE_URL")),
+    }
+
+
 class AIMoveReq(BaseModel):
     board: List[List[str]]
     player: str = "R"
@@ -161,171 +180,89 @@ class AIMoveReq(BaseModel):
 class PredictReq(BaseModel):
     board: List[List[str]]
     player: str = "R"
+    ai_mode: str = "minimax"
     depth: int = 8
 
 
-class ImageAnalyzeReq(BaseModel):
-    image_data: str
-    rows: int = 9
-    cols: int = 9
-    player: Optional[str] = None
-    depth: int = 8
-
-
-def _decode_data_url(data_url: str) -> Image.Image:
-    if not data_url or "," not in data_url:
-        raise HTTPException(400, "image_data invalide")
-    try:
-        _, encoded = data_url.split(",", 1)
-        raw = base64.b64decode(encoded)
-        img = Image.open(io.BytesIO(raw)).convert("RGB")
-        return img
-    except Exception as e:
-        raise HTTPException(400, f"Impossible de lire l'image: {e}")
-
-
-def _classify_token(rgb: np.ndarray) -> str:
-    r, g, b = [float(x) for x in rgb]
-    if r > 135 and r > g + 35 and r > b + 20:
-        return RED
-    if r > 140 and g > 110 and b < 150 and (r + g) > 320:
-        return YELLOW
-    return EMPTY
-
-
-def _infer_board_from_image(img: Image.Image, rows: int, cols: int) -> list:
-    arr = np.asarray(img, dtype=np.float32)
-    h, w = arr.shape[:2]
-    side = min(h, w)
-    y0 = (h - side) // 2
-    x0 = (w - side) // 2
-    crop = arr[y0 : y0 + side, x0 : x0 + side]
-
-    cell_h = side / rows
-    cell_w = side / cols
-    board = [[EMPTY for _ in range(cols)] for _ in range(rows)]
-
-    for r in range(rows):
-        for c in range(cols):
-            cy = int((r + 0.5) * cell_h)
-            cx = int((c + 0.5) * cell_w)
-            rad_y = max(2, int(cell_h * 0.22))
-            rad_x = max(2, int(cell_w * 0.22))
-            y1 = max(0, cy - rad_y)
-            y2 = min(side, cy + rad_y)
-            x1 = max(0, cx - rad_x)
-            x2 = min(side, cx + rad_x)
-            patch = crop[y1:y2, x1:x2]
-            rgb = patch.mean(axis=(0, 1))
-            board[r][c] = _classify_token(rgb)
-
-    return board
-
-
-def _infer_player_from_board(board: list) -> str:
-    red = sum(cell == RED for row in board for cell in row)
-    yellow = sum(cell == YELLOW for row in board for cell in row)
-    return RED if red <= yellow else YELLOW
-
-
-def _build_analysis_payload(board: list, player: str, depth: int) -> dict:
-    out = analyze_position(
-        board, player, depth=max(1, min(12, depth)), time_limit_ms=1800
-    )
-    pred = out["prediction"]
-    return {
-        "board": board,
-        "player": player,
-        "prediction": {
-            "winner": pred.get("winner"),
-            "moves": pred.get("moves"),
-            "score": pred.get("score"),
-            "depth_reached": pred.get("depth_reached"),
-            "best_col": pred.get("best_col"),
-            "source": pred.get("source"),
-            "exact": pred.get("exact", False),
-            "state": out.get("position_state"),
-            "label": out.get("position_label"),
-        },
-        "best_move": {
-            "col": out.get("best_col"),
-            "score": out.get("best_score"),
-            "reason": out.get("best_move_reason"),
-            "human_label": (
-                None
-                if out.get("best_col") is None
-                else f"Colonne {out['best_col'] + 1}"
-            ),
-        },
-        "columns": out.get("columns", []),
-    }
-
-
-@app.post("/api/ai/move")
-def ai_move(req: AIMoveReq):
+def _ai_move_response(req: AIMoveReq):
     player = req.player if req.player in (RED, YELLOW) else RED
+    ai_mode = (req.ai_mode or "minimax").lower()
     depth = max(1, min(8, req.depth))
 
-    result = best_move(req.board, player, depth, req.ai_mode)
+    result = best_move(req.board, player, depth, ai_mode)
 
     return {
         "col": result.get("col"),
         "scores": result.get("scores", {}),
         "player": player,
-        "ai_mode": req.ai_mode,
+        "ai_mode": ai_mode,
         "depth": depth,
         "source": result.get("source"),
     }
 
 
-@app.post("/api/predict")
-def api_predict(req: PredictReq):
+def _predict_response(req: PredictReq):
     player = req.player if req.player in (RED, YELLOW) else RED
     depth = max(1, min(12, req.depth))
-    payload = _build_analysis_payload(req.board, player, depth)
-    pred = payload["prediction"]
+
+    pred = predict_outcome(
+        req.board,
+        player,
+        depth=depth,
+        time_limit_ms=1800,
+    )
+
     return {
         "winner": pred.get("winner"),
+        "mateIn": pred.get("mateIn"),
         "moves": pred.get("moves"),
         "score": pred.get("score"),
         "best_col": pred.get("best_col"),
         "depth_reached": pred.get("depth_reached"),
         "source": pred.get("source"),
         "exact": pred.get("exact", False),
-        "state": pred.get("state"),
-        "label": pred.get("label"),
         "player": player,
+        "ai_mode": req.ai_mode,
         "depth": depth,
     }
 
 
-@app.post("/api/analyze")
-def api_analyze(req: PredictReq):
-    player = req.player if req.player in (RED, YELLOW) else RED
-    depth = max(1, min(12, req.depth))
-    return _build_analysis_payload(req.board, player, depth)
+# =========================================================
+# ROUTES IA PRINCIPALES
+# =========================================================
 
 
-@app.post("/api/image/analyze")
-def api_image_analyze(req: ImageAnalyzeReq):
-    rows = max(4, min(20, req.rows))
-    cols = max(4, min(20, req.cols))
-    img = _decode_data_url(req.image_data)
-    board = _infer_board_from_image(img, rows, cols)
-    player = (
-        req.player if req.player in (RED, YELLOW) else _infer_player_from_board(board)
-    )
-    payload = _build_analysis_payload(board, player, req.depth)
-    payload["image_reading"] = {
-        "rows": rows,
-        "cols": cols,
-        "method": "center_sampling",
-        "note": "Fonctionne surtout avec une capture propre et bien cadrée du plateau.",
-    }
-    return payload
+@app.post("/api/ai/move")
+@app.post("/api/ai/move/")
+def ai_move(req: AIMoveReq):
+    return _ai_move_response(req)
+
+
+@app.get("/api/ai/move")
+@app.get("/api/ai/move/")
+def ai_move_get(
+    board: str = Query(..., description="JSON-encoded board"),
+    player: str = Query("R"),
+    ai_mode: str = Query("minimax"),
+    depth: int = Query(4),
+):
+    try:
+        parsed_board = json.loads(board)
+    except Exception:
+        raise HTTPException(400, "board invalide: JSON attendu")
+
+    req = AIMoveReq(board=parsed_board, player=player, ai_mode=ai_mode, depth=depth)
+    return _ai_move_response(req)
+
+
+@app.post("/api/predict")
+@app.post("/api/predict/")
+def api_predict(req: PredictReq):
+    return _predict_response(req)
 
 
 @app.get("/api/predict")
+@app.get("/api/predict/")
 def api_predict_get():
     return {
         "ok": False,
@@ -334,9 +271,104 @@ def api_predict_get():
 
 
 @app.post("/api/ai/reload")
+@app.post("/api/ai/reload/")
 def ai_reload():
     ok = reload_model()
     return {"loaded": ok}
+
+
+# =========================================================
+# ROUTES LEGACY / COMPATIBILITÉ ANCIEN FRONTEND
+# =========================================================
+
+
+@app.post("/minimax")
+@app.post("/minimax/")
+def legacy_minimax(req: AIMoveReq):
+    req.ai_mode = "minimax"
+    return _ai_move_response(req)
+
+
+@app.get("/minimax")
+@app.get("/minimax/")
+def legacy_minimax_get(
+    board: str = Query(..., description="JSON-encoded board"),
+    player: str = Query("R"),
+    depth: int = Query(4),
+):
+    try:
+        parsed_board = json.loads(board)
+    except Exception:
+        raise HTTPException(400, "board invalide: JSON attendu")
+
+    req = AIMoveReq(board=parsed_board, player=player, ai_mode="minimax", depth=depth)
+    return _ai_move_response(req)
+
+
+@app.post("/hybrid")
+@app.post("/hybrid/")
+def legacy_hybrid(req: AIMoveReq):
+    req.ai_mode = "hybrid"
+    return _ai_move_response(req)
+
+
+@app.get("/hybrid")
+@app.get("/hybrid/")
+def legacy_hybrid_get(
+    board: str = Query(..., description="JSON-encoded board"),
+    player: str = Query("R"),
+    depth: int = Query(4),
+):
+    try:
+        parsed_board = json.loads(board)
+    except Exception:
+        raise HTTPException(400, "board invalide: JSON attendu")
+
+    req = AIMoveReq(board=parsed_board, player=player, ai_mode="hybrid", depth=depth)
+    return _ai_move_response(req)
+
+
+@app.post("/trained")
+@app.post("/trained/")
+def legacy_trained(req: AIMoveReq):
+    req.ai_mode = "trained"
+    return _ai_move_response(req)
+
+
+@app.get("/trained")
+@app.get("/trained/")
+def legacy_trained_get(
+    board: str = Query(..., description="JSON-encoded board"),
+    player: str = Query("R"),
+    depth: int = Query(4),
+):
+    try:
+        parsed_board = json.loads(board)
+    except Exception:
+        raise HTTPException(400, "board invalide: JSON attendu")
+
+    req = AIMoveReq(board=parsed_board, player=player, ai_mode="trained", depth=depth)
+    return _ai_move_response(req)
+
+
+@app.post("/predict")
+@app.post("/predict/")
+def legacy_predict(req: PredictReq):
+    return _predict_response(req)
+
+
+@app.get("/predict")
+@app.get("/predict/")
+def legacy_predict_get():
+    return {
+        "ok": False,
+        "message": "Utilise POST /predict ou POST /api/predict avec un JSON {board, player, depth}",
+    }
+
+
+# =========================================================
+# SAUVEGARDE
+# =========================================================
 
 
 class SaveReq(BaseModel):
@@ -360,6 +392,9 @@ class SaveReq(BaseModel):
 
 @app.post("/api/games")
 def save_game(req: SaveReq):
+    if not os.environ.get("DATABASE_URL"):
+        raise HTTPException(503, "Base de données indisponible")
+
     if req.starting_color not in (RED, YELLOW):
         raise HTTPException(400, "starting_color invalide")
 
@@ -426,6 +461,9 @@ def save_game(req: SaveReq):
 
 @app.get("/api/games")
 def list_games():
+    if not os.environ.get("DATABASE_URL"):
+        raise HTTPException(503, "Base de données indisponible")
+
     with db_conn() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
@@ -458,6 +496,9 @@ def list_games():
 
 @app.get("/api/games/{game_id}")
 def get_game(game_id: int):
+    if not os.environ.get("DATABASE_URL"):
+        raise HTTPException(503, "Base de données indisponible")
+
     with db_conn() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("SELECT * FROM saved_games WHERE game_id=%s", (game_id,))
@@ -469,6 +510,9 @@ def get_game(game_id: int):
 
 @app.delete("/api/games/{game_id}")
 def delete_game(game_id: int):
+    if not os.environ.get("DATABASE_URL"):
+        raise HTTPException(503, "Base de données indisponible")
+
     with db_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -485,6 +529,9 @@ def delete_game(game_id: int):
 
 @app.post("/api/games/position")
 def game_position(req: dict):
+    if not os.environ.get("DATABASE_URL"):
+        raise HTTPException(503, "Base de données indisponible")
+
     game_id = req.get("game_id")
     view_index = req.get("view_index", 0)
 
@@ -547,12 +594,20 @@ def game_position(req: dict):
     }
 
 
+# =========================================================
+# IMPORT BGA
+# =========================================================
+
+
 class BGAReq(BaseModel):
     table_id: str
 
 
 @app.post("/api/bga/import")
 def bga_import(req: BGAReq):
+    if not os.environ.get("DATABASE_URL"):
+        raise HTTPException(503, "Base de données indisponible")
+
     tid = req.table_id.strip()
     if not tid.isdigit():
         raise HTTPException(400, "Numéro invalide")
@@ -649,11 +704,19 @@ def bga_import(req: BGAReq):
     }
 
 
+# =========================================================
+# OUTILS ONLINE
+# =========================================================
+
+
 def _mk(rows, cols):
     return [[EMPTY] * cols for _ in range(rows)]
 
 
 def _drop(board, col, token):
+    if col < 0 or col >= len(board[0]):
+        raise ValueError("colonne invalide")
+
     for r in range(len(board) - 1, -1, -1):
         if board[r][col] == EMPTY:
             board[r][col] = token
@@ -715,6 +778,9 @@ class MoveReq(BaseModel):
 
 @app.post("/api/online/create")
 def online_create(req: CreateOnlineReq):
+    if not os.environ.get("DATABASE_URL"):
+        raise HTTPException(503, "Base de données indisponible")
+
     code = _code()
     secret = secrets.token_urlsafe(24)
     rows = max(4, min(20, req.rows))
@@ -758,6 +824,9 @@ def online_create(req: CreateOnlineReq):
 
 @app.post("/api/online/join")
 def online_join(req: JoinOnlineReq):
+    if not os.environ.get("DATABASE_URL"):
+        raise HTTPException(503, "Base de données indisponible")
+
     code = req.code.strip().upper()
     secret = secrets.token_urlsafe(24)
 
@@ -808,6 +877,9 @@ def online_join(req: JoinOnlineReq):
 
 @app.get("/api/online/{code}/state")
 def online_state(code: str):
+    if not os.environ.get("DATABASE_URL"):
+        raise HTTPException(503, "Base de données indisponible")
+
     code = code.strip().upper()
 
     with db_conn() as conn:
@@ -847,6 +919,9 @@ def online_state(code: str):
 
 @app.post("/api/online/{code}/move")
 def online_move(code: str, req: MoveReq):
+    if not os.environ.get("DATABASE_URL"):
+        raise HTTPException(503, "Base de données indisponible")
+
     code = code.strip().upper()
 
     with db_conn() as conn:
@@ -917,6 +992,9 @@ class RematchReq(BaseModel):
 
 @app.post("/api/online/{code}/rematch")
 def online_rematch(code: str, req: RematchReq):
+    if not os.environ.get("DATABASE_URL"):
+        raise HTTPException(503, "Base de données indisponible")
+
     code = code.strip().upper()
 
     with db_conn() as conn:
@@ -959,6 +1037,10 @@ def online_rematch(code: str, req: RematchReq):
 
     return {"ok": True, "new_starting_color": new_start}
 
+
+# =========================================================
+# FICHIERS PUBLICS / FRONT
+# =========================================================
 
 PUBLIC_DIR = os.path.join(BASE_DIR, "public")
 

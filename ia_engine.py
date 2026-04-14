@@ -45,6 +45,7 @@ _history_heuristic = {}
 _cached_model = None
 _cached_scaler = None
 _cached_opening_book = None
+_zobrist_tables = {}
 
 # Table de transposition
 _tt = {}
@@ -60,11 +61,32 @@ _stop_search = False
 
 
 def _find_file(filename):
+    override_map = {
+        "connect4_policy_9x9.pkl": os.environ.get("MODEL_PATH"),
+        "connect4_policy_9x9_scaler.pkl": os.environ.get("SCALER_PATH"),
+        "opening_book.json": os.environ.get("OPENING_BOOK_PATH"),
+    }
+    override = override_map.get(filename)
+    if override and os.path.exists(override):
+        return override
+
     here = _BASE_DIR
     parent = os.path.dirname(here)
     grandparent = os.path.dirname(parent)
+    env = (
+        os.environ.get("APP_ENV")
+        or os.environ.get("NODE_ENV")
+        or (
+            "production"
+            if os.environ.get("RENDER") or os.environ.get("DATABASE_URL")
+            else "local"
+        )
+    ).lower()
+    model_dir = os.environ.get("MODEL_DIR")
 
     candidates = [
+        os.path.join(model_dir, filename) if model_dir else None,
+        os.path.join(here, "web", filename),
         os.path.join(here, filename),
         os.path.join(here, "desktop", filename),
         os.path.join(here, "donnees", filename),
@@ -74,13 +96,24 @@ def _find_file(filename):
         os.path.join(grandparent, filename),
         os.path.join(grandparent, "desktop", filename),
         os.path.join(grandparent, "donnees", filename),
+        os.path.join(grandparent, "puissance4", filename),
         os.path.join(os.getcwd(), filename),
         os.path.join(os.getcwd(), "desktop", filename),
         os.path.join(os.getcwd(), "donnees", filename),
+        os.path.join(os.getcwd(), "puissance4", filename),
     ]
 
+    if env == "production":
+        candidates.extend(
+            [
+                os.path.join("/opt/render/project/src", filename),
+                os.path.join("/opt/render/project/src", "puissance4", filename),
+                os.path.join("/opt/render/project/src", "desktop", filename),
+            ]
+        )
+
     for path in candidates:
-        if os.path.exists(path):
+        if path and os.path.exists(path):
             return path
 
     return os.path.join(here, filename)
@@ -659,6 +692,40 @@ def _board_key(board: list) -> tuple:
     return tuple(tuple(r) for r in board)
 
 
+def _get_zobrist_table(rows: int, cols: int):
+    key = (rows, cols)
+    table = _zobrist_tables.get(key)
+    if table is not None:
+        return table
+
+    rng = random.Random(f"connect4-zobrist-{rows}x{cols}")
+    table = {
+        RED: [[rng.getrandbits(64) for _ in range(cols)] for _ in range(rows)],
+        YELLOW: [[rng.getrandbits(64) for _ in range(cols)] for _ in range(rows)],
+        "turn": {
+            RED: rng.getrandbits(64),
+            YELLOW: rng.getrandbits(64),
+        },
+    }
+    _zobrist_tables[key] = table
+    return table
+
+
+def _zobrist_hash(board: list, current_player: str) -> int:
+    rows = len(board)
+    cols = len(board[0])
+    table = _get_zobrist_table(rows, cols)
+    h = table["turn"][current_player]
+
+    for r in range(rows):
+        for c in range(cols):
+            token = board[r][c]
+            if token in (RED, YELLOW):
+                h ^= table[token][r][c]
+
+    return h
+
+
 def _history_score(player: str, col: int) -> int:
     return _history_heuristic.get((player, col), 0)
 
@@ -779,7 +846,7 @@ def _negamax(
     if depth <= 0:
         return _evaluate_for_side_to_move(grid, current_player, root_player), None, None
 
-    key = (_board_key(grid), depth, current_player)
+    key = (_zobrist_hash(grid, current_player), depth, current_player)
     tt_entry = _tt.get(key)
     if tt_entry is not None:
         tt_score, tt_move, tt_flag, tt_dist = tt_entry
@@ -1111,6 +1178,7 @@ def predict_outcome(
     if term:
         return {
             "winner": winner,
+            "mateIn": 0,
             "moves": 0,
             "score": 0,
             "depth_reached": 0,
@@ -1123,6 +1191,7 @@ def predict_outcome(
     if immediate is not None:
         return {
             "winner": player,
+            "mateIn": 1,
             "moves": 1,
             "score": WIN_SCORE - 1,
             "depth_reached": 1,
@@ -1138,6 +1207,7 @@ def predict_outcome(
         if not safe:
             return {
                 "winner": opp,
+                "mateIn": 1,
                 "moves": 1,
                 "score": -WIN_SCORE + 1,
                 "depth_reached": 1,
@@ -1174,6 +1244,7 @@ def predict_outcome(
     if score > 900_000:
         return {
             "winner": player,
+            "mateIn": dist if dist is not None else 1,
             "moves": dist if dist is not None else 1,
             "score": score,
             "depth_reached": depth_reached,
@@ -1185,6 +1256,7 @@ def predict_outcome(
     if score < -900_000:
         return {
             "winner": opp,
+            "mateIn": dist if dist is not None else 1,
             "moves": dist if dist is not None else 1,
             "score": score,
             "depth_reached": depth_reached,
@@ -1214,6 +1286,7 @@ def predict_outcome(
 
     return {
         "winner": likely_winner,
+        "mateIn": estimated_moves,
         "moves": estimated_moves,
         "score": score,
         "depth_reached": depth_reached,
@@ -1338,182 +1411,6 @@ def best_move(
             time_limit_ms if time_limit_ms is not None else DEFAULT_TIME_LIMIT_MS
         ),
     )
-
-
-# ══════════════════════════════════════════════════════════════
-# ANALYSE POSITION / EXPLICATION
-# ══════════════════════════════════════════════════════════════
-
-
-def _score_to_state(score: int, winner: Optional[str], player: str) -> str:
-    opp = other(player)
-    if winner == player:
-        return "win"
-    if winner == opp:
-        return "loss"
-    if winner is None and abs(score) <= 120:
-        return "draw"
-    return "uncertain"
-
-
-def _score_to_label(score: int, winner: Optional[str], player: str) -> str:
-    state = _score_to_state(score, winner, player)
-    if state == "win":
-        return "victoire"
-    if state == "loss":
-        return "défaite"
-    if state == "draw":
-        return "nul"
-    return "incertaine"
-
-
-def explain_move(
-    board: list, player: str, col: int, depth: int = 10, time_limit_ms: int = 1200
-) -> dict:
-    cols = valid_columns(board)
-    if col not in cols:
-        return {
-            "col": col,
-            "playable": False,
-            "state": "invalid",
-            "label": "invalide",
-            "winner": None,
-            "moves": None,
-            "score": None,
-            "reason": "Colonne non jouable",
-        }
-
-    next_board = copy_grid(board)
-    pos = drop_in_grid(next_board, col, player)
-    if pos and check_win_cells(next_board, pos[0], pos[1], player):
-        return {
-            "col": col,
-            "playable": True,
-            "state": "win",
-            "label": "victoire",
-            "winner": player,
-            "moves": 1,
-            "score": WIN_SCORE - 1,
-            "reason": "Gain immédiat",
-        }
-
-    opp = other(player)
-    pred = predict_outcome(
-        next_board,
-        opp,
-        depth=max(1, depth - 1),
-        time_limit_ms=time_limit_ms,
-    )
-
-    pred_winner = pred.get("winner")
-    pred_score = int(pred.get("score") or 0)
-    pred_moves = pred.get("moves")
-
-    if pred_winner == opp:
-        state = "loss"
-        winner = opp
-        reason = "Ce coup laisse l'adversaire prendre l'avantage"
-    elif pred_winner == player:
-        state = "win"
-        winner = player
-        reason = "Ce coup mène vers une suite gagnante"
-    elif pred_winner is None and abs(pred_score) <= 120:
-        state = "draw"
-        winner = None
-        reason = "Ce coup mène vers une position équilibrée"
-    else:
-        state = "uncertain"
-        winner = pred_winner
-        reason = "Issue encore incertaine"
-
-    return {
-        "col": col,
-        "playable": True,
-        "state": state,
-        "label": _score_to_label(pred_score, winner, player),
-        "winner": winner,
-        "moves": None if pred_moves is None else pred_moves + 1,
-        "score": -pred_score,
-        "reason": reason,
-        "source": pred.get("source"),
-        "exact": pred.get("exact", False),
-    }
-
-
-def analyze_position(
-    board: list, player: str, depth: int = 10, time_limit_ms: int = 1800
-) -> dict:
-    cols = valid_columns(board)
-    if not cols:
-        return {
-            "position_state": "draw",
-            "position_label": "nul",
-            "prediction": {
-                "winner": None,
-                "moves": 0,
-                "score": 0,
-                "depth_reached": 0,
-                "best_col": None,
-                "source": "no_moves",
-                "exact": True,
-            },
-            "best_col": None,
-            "best_score": 0,
-            "best_move_reason": "Aucun coup légal",
-            "columns": [],
-        }
-
-    pred = predict_outcome(
-        board,
-        player,
-        depth=depth,
-        time_limit_ms=time_limit_ms,
-    )
-
-    best = best_move(
-        board,
-        player,
-        depth=max(1, min(depth, 16)),
-        ai_mode="minimax",
-        time_limit_ms=time_limit_ms,
-    )
-    best_col = best.get("col")
-    best_score = (
-        int((best.get("scores") or {}).get(best_col, pred.get("score") or 0))
-        if best_col is not None
-        else int(pred.get("score") or 0)
-    )
-
-    columns = []
-    per_col_budget = max(250, min(900, time_limit_ms // max(1, len(cols))))
-    for col in cols:
-        info = explain_move(
-            board,
-            player,
-            col,
-            depth=max(2, min(depth, 12)),
-            time_limit_ms=per_col_budget,
-        )
-        columns.append(info)
-
-    reason = "Coup recommandé par l'IA"
-    best_info = next((x for x in columns if x.get("col") == best_col), None)
-    if best_info and best_info.get("reason"):
-        reason = best_info["reason"]
-
-    return {
-        "position_state": _score_to_state(
-            int(pred.get("score") or 0), pred.get("winner"), player
-        ),
-        "position_label": _score_to_label(
-            int(pred.get("score") or 0), pred.get("winner"), player
-        ),
-        "prediction": pred,
-        "best_col": best_col,
-        "best_score": best_score,
-        "best_move_reason": reason,
-        "columns": columns,
-    }
 
 
 def reload_model():
