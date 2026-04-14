@@ -249,17 +249,24 @@ def api_ai_move(payload: AIMoveRequest):
         )
 
 
-@app.post("/api/predict")
-def api_predict(payload: PredictRequest):
-    validate_board(payload.board)
+@app.get("/api/predict")
+def api_predict_get(board: str, player: str, depth: int = 8):
+    try:
+        parsed_board = json.loads(board)
+    except Exception:
+        raise HTTPException(status_code=400, detail="board invalide")
 
-    # On force une recherche plus forte pour le web
-    depth = max(1, min(int(payload.depth), 20))
+    validate_board(parsed_board)
+
+    if player not in ("R", "Y"):
+        raise HTTPException(status_code=400, detail="player invalide")
+
+    depth = max(4, min(int(depth), 12))
 
     try:
         result = predict_outcome(
-            board=payload.board,
-            player=payload.player,
+            board=parsed_board,
+            player=player,
             depth=depth,
             time_limit_ms=8000,
         )
@@ -269,13 +276,14 @@ def api_predict(payload: PredictRequest):
             "moves": result.get("moves"),
             "mateIn": result.get("mateIn"),
             "score": result.get("score", 0),
-            "depth_reached": result.get("depth_reached", 0),
+            "depth_reached": result.get("depth_reached", depth),
             "best_col": result.get("best_col"),
             "source": result.get("source", "predict"),
             "exact": bool(result.get("exact", False)),
         }
+
     except Exception as e:
-        print(f"[app] /api/predict error: {e}")
+        print(f"[app] /api/predict GET error: {e}")
         return {
             "winner": None,
             "moves": None,
@@ -285,6 +293,56 @@ def api_predict(payload: PredictRequest):
             "best_col": None,
             "source": f"error:{type(e).__name__}",
             "exact": False,
+        }
+
+
+@app.get("/api/ai/move")
+def api_ai_move_get(board: str, player: str, ai_mode: str = "minimax", depth: int = 4):
+    try:
+        parsed_board = json.loads(board)
+    except Exception:
+        raise HTTPException(status_code=400, detail="board invalide")
+
+    validate_board(parsed_board)
+
+    if player not in ("R", "Y"):
+        raise HTTPException(status_code=400, detail="player invalide")
+
+    depth = max(1, min(int(depth), 12))
+    ai_mode = (ai_mode or "minimax").lower()
+
+    try:
+        result = best_move(
+            board=parsed_board,
+            player=player,
+            depth=depth,
+            ai_mode=ai_mode,
+            time_limit_ms=1800,
+        )
+
+        return {
+            "col": result.get("col"),
+            "scores": result.get("scores", {}),
+            "player": player,
+            "ai_mode": ai_mode,
+            "depth": depth,
+            "source": result.get("source", "unknown"),
+            "depth_reached": result.get("depth_reached", 0),
+            "distance": result.get("distance"),
+            "distances": result.get("distances", {}),
+        }
+    except Exception as e:
+        print(f"[app] /api/ai/move GET error: {e}")
+        return {
+            "col": None,
+            "scores": {},
+            "player": player,
+            "ai_mode": ai_mode,
+            "depth": depth,
+            "source": f"error:{type(e).__name__}",
+            "depth_reached": 0,
+            "distance": None,
+            "distances": {},
         }
 
 

@@ -1473,25 +1473,3 @@ canvas#board {
   font-size: 13px;
   opacity: 0.9;
 }
-#predictionText {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 10px 14px;
-  border-radius: 12px;
-  background: rgba(20, 10, 50, 0.6);
-  border: 1px solid rgba(255,255,255,0.08);
-  font-size: 14px;
-  line-height: 1.4;
-}
-
-.prediction-line {
-  padding: 4px 8px;
-  border-radius: 8px;
-  background: rgba(255,255,255,0.05);
-  transition: 0.2s;
-}
-
-.prediction-line:hover {
-  background: rgba(124,82,232,0.2);
-}

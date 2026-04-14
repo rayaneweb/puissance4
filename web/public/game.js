@@ -413,30 +413,32 @@ class Connect4Web {
   }
 
   async requestPrediction(payload) {
-  const useGet = this.runtime?.env === "production";
-
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 2500);
+  const timeoutId = setTimeout(() => controller.abort(), 7000);
 
   try {
-    if (useGet) {
+    // 1) on tente GET d'abord (plus compatible avec ton backend Render)
+    try {
       const params = new URLSearchParams({
         board: JSON.stringify(payload.board || []),
         player: String(payload.player || "R"),
-        depth: String(payload.depth || 4),
+        depth: String(payload.depth || 6),
       });
 
       return await this.apiFetch(`/predict?${params.toString()}`, {
         method: "GET",
         signal: controller.signal,
       });
-    }
+    } catch (e1) {
+      console.warn("GET /predict échoué, tentative POST...", e1);
 
-    return await this.apiFetch("/predict", {
-      method: "POST",
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    });
+      // 2) fallback POST
+      return await this.apiFetch("/predict", {
+        method: "POST",
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+    }
   } finally {
     clearTimeout(timeoutId);
   }
@@ -696,100 +698,183 @@ async updatePrediction() {
   }
 
   if (this.gameOver) {
-    let text = "Prédiction : Match nul";
-
     if (this.winner === this.RED) {
-      text = "Prédiction : Rouge a gagné";
+      this.setPredictionText("Prédiction : Rouge a gagné");
     } else if (this.winner === this.YELLOW) {
-      text = "Prédiction : Jaune a gagné";
+      this.setPredictionText("Prédiction : Jaune a gagné");
+    } else {
+      this.setPredictionText("Prédiction : Match nul");
     }
-
-    this.setPredictionText(text);
     return;
   }
 
   this.setPredictionText("Prédiction : calcul...");
 
   try {
-    // 🔹 1. prédiction globale
-    const pred = await this.requestPrediction({
-      board: this.board,
-      player: this.current,
-      depth: 6,
-    });
+    const depth = this.clampInt(this.el.depth?.value, 1, 8, 4) + 2;
+
+    // 1) prédiction globale
+    let pred = null;
+    try {
+      pred = await this.requestPrediction({
+        board: this.board,
+        player: this.current,
+        depth: Math.min(depth, 10),
+      });
+    } catch (e) {
+      console.warn("prediction backend error:", e);
+      pred = null;
+    }
 
     if (reqId !== this.predictionReqId) return;
 
-    // 🔹 2. meilleur coup (SEULEMENT si humain joue)
+    // 2) meilleur coup + poids
     let bestCol = null;
+    let bestWeight = null;
+    let moveSource = null;
+    let moveScores = {};
 
-    if (this.isHumanTurn(this.current) && !this.online.enabled) {
-      try {
-        const params = new URLSearchParams({
-  board: JSON.stringify(this.board),
-  player: this.current,
-  ai_mode: "minimax",
-  depth: 6,
-});
+    try {
+      const params = new URLSearchParams({
+        board: JSON.stringify(this.board),
+        player: this.current,
+        ai_mode: "minimax",
+        depth: String(Math.min(depth, 8)),
+      });
 
-const moveData = await this.apiFetch(`/ai/move?${params.toString()}`, {
-  method: "GET",
-});
+      const moveData = await this.apiFetch(`/ai/move?${params.toString()}`, {
+        method: "GET",
+      });
 
-        bestCol =
-          Number.isInteger(moveData?.col) ? moveData.col :
-          Number.isInteger(moveData?.best_col) ? moveData.best_col :
-          null;
+      if (reqId !== this.predictionReqId) return;
 
-      } catch (e) {
-        console.warn("best move error:", e);
+      bestCol =
+        Number.isInteger(moveData?.col) ? moveData.col :
+        Number.isInteger(moveData?.best_col) ? moveData.best_col :
+        null;
+
+      moveSource = moveData?.source || null;
+      moveScores = moveData?.scores || {};
+
+      if (bestCol !== null && moveScores && Object.prototype.hasOwnProperty.call(moveScores, bestCol)) {
+        bestWeight = moveScores[bestCol];
       }
+    } catch (e) {
+      console.warn("best move error:", e);
     }
 
-    // 🔹 3. construire le texte
-    const winner = this.normalizePredictionWinner(pred?.winner);
-    const moves =
-      Number.isInteger(pred?.moves) ? pred.moves :
-      Number.isInteger(pred?.mateIn) ? pred.mateIn :
-      null;
-    const score = typeof pred?.score === "number" ? pred.score : null;
+    // 3) si la prédiction backend a échoué, on fabrique au moins une prédiction locale simple
+    let winner = undefined;
+    let moves = null;
+    let score = null;
+    let exact = false;
+
+    if (pred) {
+      winner = this.normalizePredictionWinner(pred?.winner);
+      moves =
+        Number.isInteger(pred?.moves) ? pred.moves :
+        Number.isInteger(pred?.mateIn) ? pred.mateIn :
+        null;
+      score = typeof pred?.score === "number" ? pred.score : null;
+      exact = !!pred?.exact;
+    } else if (typeof bestWeight === "number") {
+      score = bestWeight;
+      winner = null;
+      moves = null;
+      exact = false;
+    }
 
     let text = "Prédiction : ";
 
+    // 4) texte principal
     if (winner === this.RED || winner === this.YELLOW) {
       const name = winner === this.RED ? "Rouge" : "Jaune";
 
       if (moves !== null) {
-        text += `${name} gagne dans ${moves} coup(s)`;
+        text += exact
+          ? `${name} gagne dans ${moves} coup(s)`
+          : `${name} semble gagner dans environ ${moves} coup(s)`;
       } else {
         text += `avantage décisif pour ${name}`;
       }
-
-    } else if (score !== null) {
-      if (score > 0) {
+    } else if (typeof score === "number") {
+      if (score > 900000) {
+        text += "Rouge a un avantage décisif";
+      } else if (score < -900000) {
+        text += "Jaune a un avantage décisif";
+      } else if (score > 0) {
         text += `Rouge a l'avantage (score ${Math.round(score)})`;
       } else if (score < 0) {
         text += `Jaune a l'avantage (score ${Math.round(score)})`;
       } else {
-        text += `position équilibrée (score 0)`;
+        text += "position équilibrée";
       }
     } else {
-      text += "incertaine";
+      text += "position incertaine";
     }
 
-    // 🔹 4. ajouter meilleur coup
-    if (bestCol !== null) {
-      text += ` — meilleur coup : colonne ${bestCol + 1}`;
+    // 5) conseil pour humain
+    if (this.isHumanTurn(this.current) && !this.online.enabled && bestCol !== null) {
+      text += ` — meilleur coup conseillé : colonne ${bestCol + 1}`;
+
+      if (bestWeight !== null && bestWeight !== undefined) {
+        text += ` (poids ${Math.round(bestWeight)})`;
+      }
+
+      if (moveSource) {
+        if (moveSource === "winning_move") {
+          text += " — coup gagnant";
+        } else if (moveSource === "blocking_move") {
+          text += " — coup défensif important";
+        }
+      }
     }
 
     if (reqId !== this.predictionReqId) return;
-
     this.setPredictionText(text);
 
   } catch (e) {
     if (reqId !== this.predictionReqId) return;
 
     console.error("prediction error:", e);
+
+    // dernier fallback : meilleur coup seulement
+    try {
+      const params = new URLSearchParams({
+        board: JSON.stringify(this.board),
+        player: this.current,
+        ai_mode: "minimax",
+        depth: "6",
+      });
+
+      const moveData = await this.apiFetch(`/ai/move?${params.toString()}`, {
+        method: "GET",
+      });
+
+      const bestCol =
+        Number.isInteger(moveData?.col) ? moveData.col :
+        Number.isInteger(moveData?.best_col) ? moveData.best_col :
+        null;
+
+      const scores = moveData?.scores || {};
+      const bestWeight =
+        bestCol !== null && Object.prototype.hasOwnProperty.call(scores, bestCol)
+          ? scores[bestCol]
+          : null;
+
+      if (bestCol !== null && this.isHumanTurn(this.current) && !this.online.enabled) {
+        let text = `Prédiction : analyse partielle`;
+        text += ` — meilleur coup conseillé : colonne ${bestCol + 1}`;
+        if (bestWeight !== null) {
+          text += ` (poids ${Math.round(bestWeight)})`;
+        }
+        this.setPredictionText(text);
+        return;
+      }
+    } catch (e2) {
+      console.warn("fallback best move failed:", e2);
+    }
+
     this.setPredictionText("Prédiction : indisponible");
   }
 }
@@ -1803,9 +1888,10 @@ async onlinePlay(col) {
   }
 
   setPredictionText(text) {
-  if (!this.el.predictionText) return;
-  this.el.predictionText.textContent = text;
-}
+    if (!this.el.predictionText) return;
+    this._lastPredictionText = String(text || "");
+    this.el.predictionText.textContent = this._lastPredictionText;
+  }
 
   // ===== AI SCORES
   setScoresBlank() {
