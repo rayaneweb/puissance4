@@ -415,19 +415,31 @@ class Connect4Web {
   async requestPrediction(payload) {
   const useGet = this.runtime?.env === "production";
 
-  if (useGet) {
-    const params = new URLSearchParams({
-      board: JSON.stringify(payload.board || []),
-      player: String(payload.player || "R"),
-      depth: String(payload.depth || 4),
-    });
-    return this.apiFetch(`/predict?${params.toString()}`, { method: "GET" });
-  }
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 2500);
 
-  return this.apiFetch("/predict", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
+  try {
+    if (useGet) {
+      const params = new URLSearchParams({
+        board: JSON.stringify(payload.board || []),
+        player: String(payload.player || "R"),
+        depth: String(payload.depth || 4),
+      });
+
+      return await this.apiFetch(`/predict?${params.toString()}`, {
+        method: "GET",
+        signal: controller.signal,
+      });
+    }
+
+    return await this.apiFetch("/predict", {
+      method: "POST",
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
   cleanJoinUrl() {
@@ -673,24 +685,25 @@ async updatePrediction() {
   const reqId = ++this.predictionReqId;
 
   if (!this.board) {
-    this._lastPredictionText = "Prédiction : ...";
-    this.setPredictionText(this._lastPredictionText);
+    this.setPredictionText("Prédiction : ...");
     return;
   }
 
   const hasAnyMove = this.board.some(row => row.some(cell => cell !== this.EMPTY));
   if (!hasAnyMove) {
-    this._lastPredictionText = "Prédiction : ...";
-    this.setPredictionText(this._lastPredictionText);
+    this.setPredictionText("Prédiction : ...");
     return;
   }
 
   if (this.gameOver) {
     let text = "Prédiction : Match nul";
-    if (this.winner === this.RED) text = "Prédiction : Rouge a gagné";
-    else if (this.winner === this.YELLOW) text = "Prédiction : Jaune a gagné";
 
-    this._lastPredictionText = text;
+    if (this.winner === this.RED) {
+      text = "Prédiction : Rouge a gagné";
+    } else if (this.winner === this.YELLOW) {
+      text = "Prédiction : Jaune a gagné";
+    }
+
     this.setPredictionText(text);
     return;
   }
@@ -698,57 +711,85 @@ async updatePrediction() {
   this.setPredictionText("Prédiction : calcul...");
 
   try {
-    const data = await this.requestPrediction({
+    // 🔹 1. prédiction globale
+    const pred = await this.requestPrediction({
       board: this.board,
       player: this.current,
-      depth: Math.max(8, this.clampInt(this.el.depth?.value, 1, 12, 8)),
+      depth: 6,
     });
 
     if (reqId !== this.predictionReqId) return;
 
-    let text = "Prédiction : incertaine";
+    // 🔹 2. meilleur coup (SEULEMENT si humain joue)
+    let bestCol = null;
 
-    const winner = this.normalizePredictionWinner(data?.winner);
+    if (this.isHumanTurn(this.current) && !this.online.enabled) {
+      try {
+        const moveData = await this.apiFetch("/ai/move", {
+          method: "POST",
+          body: JSON.stringify({
+            board: this.board,
+            player: this.current,
+            ai_mode: "minimax",
+            depth: 6,
+          }),
+        });
+
+        bestCol =
+          Number.isInteger(moveData?.col) ? moveData.col :
+          Number.isInteger(moveData?.best_col) ? moveData.best_col :
+          null;
+
+      } catch (e) {
+        console.warn("best move error:", e);
+      }
+    }
+
+    // 🔹 3. construire le texte
+    const winner = this.normalizePredictionWinner(pred?.winner);
     const moves =
-      Number.isInteger(data?.moves) ? data.moves :
-      Number.isInteger(data?.mateIn) ? data.mateIn :
+      Number.isInteger(pred?.moves) ? pred.moves :
+      Number.isInteger(pred?.mateIn) ? pred.mateIn :
       null;
-    const score = typeof data?.score === "number" ? data.score : null;
+    const score = typeof pred?.score === "number" ? pred.score : null;
+
+    let text = "Prédiction : ";
 
     if (winner === this.RED || winner === this.YELLOW) {
-      const winnerName = winner === this.RED ? "Rouge" : "Jaune";
+      const name = winner === this.RED ? "Rouge" : "Jaune";
+
       if (moves !== null) {
-        text = `Prédiction : ${winnerName} gagne dans ${moves} coup(s)`;
+        text += `${name} gagne dans ${moves} coup(s)`;
       } else {
-        text = `Prédiction : avantage décisif pour ${winnerName}`;
+        text += `avantage décisif pour ${name}`;
       }
+
     } else if (score !== null) {
-      if (score >= 900000) {
-        text = "Prédiction : Rouge devrait gagner";
-      } else if (score <= -900000) {
-        text = "Prédiction : Jaune devrait gagner";
-      } else if (score > 3000) {
-        text = "Prédiction : Rouge a un gros avantage";
-      } else if (score > 300) {
-        text = "Prédiction : Rouge a l'avantage";
-      } else if (score < -3000) {
-        text = "Prédiction : Jaune a un gros avantage";
-      } else if (score < -300) {
-        text = "Prédiction : Jaune a l'avantage";
+      if (score > 0) {
+        text += `Rouge a l'avantage (score ${Math.round(score)})`;
+      } else if (score < 0) {
+        text += `Jaune a l'avantage (score ${Math.round(score)})`;
       } else {
-        text = "Prédiction : position équilibrée";
+        text += `position équilibrée (score 0)`;
       }
+    } else {
+      text += "incertaine";
+    }
+
+    // 🔹 4. ajouter meilleur coup
+    if (bestCol !== null) {
+      text += ` — meilleur coup : colonne ${bestCol + 1}`;
     }
 
     if (reqId !== this.predictionReqId) return;
 
-    this._lastPredictionText = text;
     this.setPredictionText(text);
+
   } catch (e) {
     if (reqId !== this.predictionReqId) return;
-    this._lastPredictionText = "Prédiction : indisponible";
-    this.setPredictionText(this._lastPredictionText);
-    console.error("Erreur prediction :", e);
+
+    console.error("prediction error:", e);
+    this.setPredictionText("Prédiction : indisponible");
   }
 }
 resetPredictionDisplay() {

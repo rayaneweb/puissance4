@@ -301,14 +301,14 @@ def api_predict_get(board: str, player: str, depth: int = 8):
         raise HTTPException(status_code=400, detail="player invalide")
 
     # profondeur minimale plus grande pour voir les gains avant le dernier coup
-    depth = max(8, min(int(depth), 20))
+    depth = max(4, min(int(depth), 10))
 
     try:
         result = predict_outcome(
             board=parsed_board,
             player=player,
             depth=depth,
-            time_limit_ms=8000,
+            time_limit_ms=2500,
         )
 
         winner = result.get("winner")
