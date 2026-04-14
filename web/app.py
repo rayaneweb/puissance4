@@ -193,6 +193,7 @@ def api_predict(req: PredictReq):
         "best_col": pred.get("best_col"),
         "depth_reached": pred.get("depth_reached"),
         "source": pred.get("source"),
+        "exact": pred.get("exact", False),
         "player": player,
         "depth": depth,
     }

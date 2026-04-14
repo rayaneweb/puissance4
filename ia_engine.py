@@ -1148,13 +1148,14 @@ def predict_outcome(
             time_limit_ms=time_limit_ms,
         )
 
-    col = result.get("col")
+        col = result.get("col")
     scores = result.get("scores", {})
     distances = result.get("distances", {})
     score = int(scores.get(col, 0)) if col is not None else 0
     dist = distances.get(col)
     depth_reached = int(result.get("depth_reached", 0))
 
+    # 1) Victoire forcée détectée
     if score > 900_000:
         return {
             "winner": player,
@@ -1163,6 +1164,7 @@ def predict_outcome(
             "depth_reached": depth_reached,
             "best_col": col,
             "source": result.get("source", "iterative"),
+            "exact": True,
         }
 
     if score < -900_000:
@@ -1173,15 +1175,34 @@ def predict_outcome(
             "depth_reached": depth_reached,
             "best_col": col,
             "source": result.get("source", "iterative"),
+            "exact": True,
         }
 
+    # 2) Estimation avant preuve complète
+    likely_winner = None
+    estimated_moves = None
+
+    if score >= 6000:
+        likely_winner = player
+        estimated_moves = max(3, 18 - depth_reached)
+    elif score <= -6000:
+        likely_winner = opp
+        estimated_moves = max(3, 18 - depth_reached)
+    elif score >= 2000:
+        likely_winner = player
+        estimated_moves = max(5, 22 - depth_reached)
+    elif score <= -2000:
+        likely_winner = opp
+        estimated_moves = max(5, 22 - depth_reached)
+
     return {
-        "winner": None,
-        "moves": dist,
+        "winner": likely_winner,
+        "moves": estimated_moves,
         "score": score,
         "depth_reached": depth_reached,
         "best_col": col,
         "source": result.get("source", "iterative"),
+        "exact": False,
     }
 
 

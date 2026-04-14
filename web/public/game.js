@@ -590,6 +590,7 @@ class Connect4Web {
     if (reqId !== this.predictionReqId) return;
 
     const winner = this.normalizePredictionWinner(data?.winner);
+    const exact = !!data?.exact;
     const moves =
       Number.isInteger(data?.moves) ? data.moves : parseInt(data?.moves, 10);
     const score =
@@ -600,13 +601,17 @@ class Connect4Web {
     if (winner === this.RED) {
       if (Number.isInteger(moves) && moves >= 0) {
         this.setPredictionText(
-          `Prédiction : Rouge gagne dans ${moves} coup(s)${
-            Number.isFinite(score) ? ` (score ${score})` : ""
-          }`
+          exact
+            ? `Prédiction : Rouge gagne dans ${moves} coup(s)${
+                Number.isFinite(score) ? ` (score ${score})` : ""
+              }`
+            : `Prédiction : Rouge devrait gagner dans environ ${moves} coup(s)${
+                Number.isFinite(score) ? ` (score ${score})` : ""
+              }`
         );
       } else {
         this.setPredictionText(
-          `Prédiction : Rouge va gagner${
+          `Prédiction : avantage Rouge${
             Number.isFinite(score) ? ` (score ${score})` : ""
           }`
         );
@@ -617,13 +622,17 @@ class Connect4Web {
     if (winner === this.YELLOW) {
       if (Number.isInteger(moves) && moves >= 0) {
         this.setPredictionText(
-          `Prédiction : Jaune gagne dans ${moves} coup(s)${
-            Number.isFinite(score) ? ` (score ${score})` : ""
-          }`
+          exact
+            ? `Prédiction : Jaune gagne dans ${moves} coup(s)${
+                Number.isFinite(score) ? ` (score ${score})` : ""
+              }`
+            : `Prédiction : Jaune devrait gagner dans environ ${moves} coup(s)${
+                Number.isFinite(score) ? ` (score ${score})` : ""
+              }`
         );
       } else {
         this.setPredictionText(
-          `Prédiction : Jaune va gagner${
+          `Prédiction : avantage Jaune${
             Number.isFinite(score) ? ` (score ${score})` : ""
           }`
         );
@@ -654,7 +663,9 @@ class Connect4Web {
           );
         } else {
           this.setPredictionText(
-            `Prédiction : position équilibrée (score ${score})`
+            `Prédiction : position équilibrée${
+              Number.isFinite(score) ? ` (score ${score})` : ""
+            }`
           );
         }
       } else {
