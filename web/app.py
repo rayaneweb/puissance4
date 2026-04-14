@@ -346,6 +346,179 @@ def api_ai_move_get(board: str, player: str, ai_mode: str = "minimax", depth: in
         }
 
 
+def ensure_db():
+    conn = get_db_conn()
+    if conn is None:
+        print("[app] DATABASE_URL absent -> stockage DB désactivé")
+        return
+
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS saved_games (
+                        game_id SERIAL PRIMARY KEY,
+                        user_id INTEGER DEFAULT 1,
+                        save_name TEXT NOT NULL DEFAULT 'partie',
+                        game_index INTEGER NOT NULL DEFAULT 1,
+                        rows_count INTEGER NOT NULL CHECK (rows_count BETWEEN 4 AND 20),
+                        cols_count INTEGER NOT NULL CHECK (cols_count BETWEEN 4 AND 20),
+                        starting_color CHAR(1) NOT NULL CHECK (starting_color IN ('R','Y')),
+                        control_red TEXT NOT NULL DEFAULT 'human',
+                        control_yellow TEXT NOT NULL DEFAULT 'ai',
+                        ai_mode TEXT NOT NULL DEFAULT 'random',
+                        ai_depth INTEGER NOT NULL DEFAULT 4,
+                        game_mode INTEGER NOT NULL DEFAULT 1,
+                        status TEXT NOT NULL DEFAULT 'in_progress',
+                        winner CHAR(1),
+                        view_index INTEGER NOT NULL DEFAULT 0,
+                        moves JSONB NOT NULL DEFAULT '[]'::jsonb,
+                        confidence INTEGER NOT NULL DEFAULT 1,
+                        distinct_cols INTEGER NOT NULL DEFAULT 0,
+                        player_red TEXT,
+                        player_yellow TEXT,
+                        created_at TIMESTAMP NOT NULL DEFAULT NOW()
+                    );
+                    """
+                )
+
+                # migration des anciennes bases
+                cur.execute(
+                    """
+                    ALTER TABLE saved_games
+                    ADD COLUMN IF NOT EXISTS user_id INTEGER DEFAULT 1;
+                """
+                )
+                cur.execute(
+                    """
+                    ALTER TABLE saved_games
+                    ADD COLUMN IF NOT EXISTS save_name TEXT NOT NULL DEFAULT 'partie';
+                """
+                )
+                cur.execute(
+                    """
+                    ALTER TABLE saved_games
+                    ADD COLUMN IF NOT EXISTS game_index INTEGER NOT NULL DEFAULT 1;
+                """
+                )
+                cur.execute(
+                    """
+                    ALTER TABLE saved_games
+                    ADD COLUMN IF NOT EXISTS rows_count INTEGER NOT NULL DEFAULT 9;
+                """
+                )
+                cur.execute(
+                    """
+                    ALTER TABLE saved_games
+                    ADD COLUMN IF NOT EXISTS cols_count INTEGER NOT NULL DEFAULT 9;
+                """
+                )
+                cur.execute(
+                    """
+                    ALTER TABLE saved_games
+                    ADD COLUMN IF NOT EXISTS starting_color CHAR(1) NOT NULL DEFAULT 'R';
+                """
+                )
+                cur.execute(
+                    """
+                    ALTER TABLE saved_games
+                    ADD COLUMN IF NOT EXISTS control_red TEXT NOT NULL DEFAULT 'human';
+                """
+                )
+                cur.execute(
+                    """
+                    ALTER TABLE saved_games
+                    ADD COLUMN IF NOT EXISTS control_yellow TEXT NOT NULL DEFAULT 'ai';
+                """
+                )
+                cur.execute(
+                    """
+                    ALTER TABLE saved_games
+                    ADD COLUMN IF NOT EXISTS ai_mode TEXT NOT NULL DEFAULT 'random';
+                """
+                )
+                cur.execute(
+                    """
+                    ALTER TABLE saved_games
+                    ADD COLUMN IF NOT EXISTS ai_depth INTEGER NOT NULL DEFAULT 4;
+                """
+                )
+                cur.execute(
+                    """
+                    ALTER TABLE saved_games
+                    ADD COLUMN IF NOT EXISTS game_mode INTEGER NOT NULL DEFAULT 1;
+                """
+                )
+                cur.execute(
+                    """
+                    ALTER TABLE saved_games
+                    ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'in_progress';
+                """
+                )
+                cur.execute(
+                    """
+                    ALTER TABLE saved_games
+                    ADD COLUMN IF NOT EXISTS winner CHAR(1);
+                """
+                )
+                cur.execute(
+                    """
+                    ALTER TABLE saved_games
+                    ADD COLUMN IF NOT EXISTS view_index INTEGER NOT NULL DEFAULT 0;
+                """
+                )
+                cur.execute(
+                    """
+                    ALTER TABLE saved_games
+                    ADD COLUMN IF NOT EXISTS moves JSONB NOT NULL DEFAULT '[]'::jsonb;
+                """
+                )
+                cur.execute(
+                    """
+                    ALTER TABLE saved_games
+                    ADD COLUMN IF NOT EXISTS confidence INTEGER NOT NULL DEFAULT 1;
+                """
+                )
+                cur.execute(
+                    """
+                    ALTER TABLE saved_games
+                    ADD COLUMN IF NOT EXISTS distinct_cols INTEGER NOT NULL DEFAULT 0;
+                """
+                )
+                cur.execute(
+                    """
+                    ALTER TABLE saved_games
+                    ADD COLUMN IF NOT EXISTS player_red TEXT;
+                """
+                )
+                cur.execute(
+                    """
+                    ALTER TABLE saved_games
+                    ADD COLUMN IF NOT EXISTS player_yellow TEXT;
+                """
+                )
+                cur.execute(
+                    """
+                    ALTER TABLE saved_games
+                    ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT NOW();
+                """
+                )
+
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_saved_games_created_at
+                    ON saved_games(created_at DESC);
+                    """
+                )
+        print("[app] Base prête")
+    except Exception as e:
+        print(f"[app] ensure_db error: {e}")
+        raise
+    finally:
+        conn.close()
+
+
 @app.get("/api/predict")
 def api_predict_get(board: str, player: str, depth: int = 8):
     try:
@@ -467,6 +640,13 @@ def api_list_games():
             out.append(item)
 
         return out
+
+    except Exception as e:
+        print(f"[app] /api/games GET error: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Chargement BD impossible: {str(e)}"
+        )
+
     finally:
         conn.close()
 
@@ -587,6 +767,13 @@ def api_save_game(payload: SaveGameRequest):
                 game_id = cur.fetchone()[0]
 
         return {"ok": True, "game_id": game_id}
+
+    except Exception as e:
+        print(f"[app] /api/games POST error: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Sauvegarde BD impossible: {str(e)}"
+        )
+
     finally:
         conn.close()
 
