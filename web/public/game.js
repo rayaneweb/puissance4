@@ -554,7 +554,7 @@ class Connect4Web {
     return undefined;
   }
 
-  async updatePrediction() {
+async updatePrediction() {
   if (!this.el.predictionText) return;
 
   if (!this.board) {
@@ -649,13 +649,13 @@ class Connect4Web {
             ? this.other(this.current)
             : null;
 
-        if (score > 2000) {
+        if (score > 350) {
           this.setPredictionText(
             `Prédiction : avantage ${
               advantagedPlayer === this.RED ? "Rouge" : "Jaune"
             } (score ${score})`
           );
-        } else if (score < -2000) {
+        } else if (score < -350) {
           this.setPredictionText(
             `Prédiction : avantage ${
               advantagedPlayer === this.RED ? "Rouge" : "Jaune"
@@ -680,9 +680,7 @@ class Connect4Web {
     console.error("Erreur /predict :", e);
     this.setPredictionText(`Prédiction : erreur (${e?.message || e})`);
   }
-}
-
-  async onlinePlay(col) {
+}  async onlinePlay(col) {
     if (!this.online.enabled || !this.online.code || !this.online.token) return;
     if (this.online.moveInFlight) return;
 

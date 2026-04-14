@@ -1095,6 +1095,18 @@ def predict_outcome(
     depth: int = 12,
     time_limit_ms: int = 1800,
 ) -> dict:
+    """
+    Retourne :
+    {
+        "winner": RED / YELLOW / None,
+        "moves": nombre de demi-coups estimé ou exact,
+        "score": score de la position pour player,
+        "depth_reached": profondeur réellement atteinte,
+        "best_col": meilleure colonne estimée,
+        "source": source de la prédiction,
+        "exact": True si victoire forcée trouvée, sinon False
+    }
+    """
     term, winner = terminal_state(board)
     if term:
         return {
@@ -1104,6 +1116,7 @@ def predict_outcome(
             "depth_reached": 0,
             "best_col": None,
             "source": "terminal",
+            "exact": True,
         }
 
     immediate = _find_immediate_winning_move(board, player)
@@ -1115,6 +1128,7 @@ def predict_outcome(
             "depth_reached": 1,
             "best_col": immediate,
             "source": "winning_move",
+            "exact": True,
         }
 
     opp = other(player)
@@ -1129,6 +1143,7 @@ def predict_outcome(
                 "depth_reached": 1,
                 "best_col": None,
                 "source": "opponent_winning_move",
+                "exact": True,
             }
 
     remaining = sum(1 for row in board for cell in row if cell == EMPTY)
@@ -1148,9 +1163,9 @@ def predict_outcome(
             time_limit_ms=time_limit_ms,
         )
 
-        col = result.get("col")
-    scores = result.get("scores", {})
-    distances = result.get("distances", {})
+    col = result.get("col")
+    scores = result.get("scores", {}) or {}
+    distances = result.get("distances", {}) or {}
     score = int(scores.get(col, 0)) if col is not None else 0
     dist = distances.get(col)
     depth_reached = int(result.get("depth_reached", 0))
@@ -1159,7 +1174,7 @@ def predict_outcome(
     if score > 900_000:
         return {
             "winner": player,
-            "moves": dist,
+            "moves": dist if dist is not None else 1,
             "score": score,
             "depth_reached": depth_reached,
             "best_col": col,
@@ -1170,7 +1185,7 @@ def predict_outcome(
     if score < -900_000:
         return {
             "winner": opp,
-            "moves": dist,
+            "moves": dist if dist is not None else 1,
             "score": score,
             "depth_reached": depth_reached,
             "best_col": col,
@@ -1178,22 +1193,24 @@ def predict_outcome(
             "exact": True,
         }
 
-    # 2) Estimation avant preuve complète
+    # 2) Victoire probable / avantage net
     likely_winner = None
     estimated_moves = None
 
-    if score >= 6000:
+    abs_score = abs(score)
+
+    if score >= 1200:
         likely_winner = player
-        estimated_moves = max(3, 18 - depth_reached)
-    elif score <= -6000:
+        estimated_moves = dist if dist is not None else max(4, 16 - depth_reached)
+    elif score <= -1200:
         likely_winner = opp
-        estimated_moves = max(3, 18 - depth_reached)
-    elif score >= 2000:
+        estimated_moves = dist if dist is not None else max(4, 16 - depth_reached)
+    elif score >= 350:
         likely_winner = player
-        estimated_moves = max(5, 22 - depth_reached)
-    elif score <= -2000:
+        estimated_moves = None
+    elif score <= -350:
         likely_winner = opp
-        estimated_moves = max(5, 22 - depth_reached)
+        estimated_moves = None
 
     return {
         "winner": likely_winner,
