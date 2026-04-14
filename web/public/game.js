@@ -673,29 +673,25 @@ async updatePrediction() {
   const reqId = ++this.predictionReqId;
 
   if (!this.board) {
-    this.setPredictionText("Prédiction : ...");
     this._lastPredictionText = "Prédiction : ...";
+    this.setPredictionText(this._lastPredictionText);
     return;
   }
 
   const hasAnyMove = this.board.some(row => row.some(cell => cell !== this.EMPTY));
   if (!hasAnyMove) {
-    this.setPredictionText("Prédiction : ...");
     this._lastPredictionText = "Prédiction : ...";
+    this.setPredictionText(this._lastPredictionText);
     return;
   }
 
   if (this.gameOver) {
     let text = "Prédiction : Match nul";
+    if (this.winner === this.RED) text = "Prédiction : Rouge a gagné";
+    else if (this.winner === this.YELLOW) text = "Prédiction : Jaune a gagné";
 
-    if (this.winner === this.RED) {
-      text = "Prédiction : Rouge a gagné";
-    } else if (this.winner === this.YELLOW) {
-      text = "Prédiction : Jaune a gagné";
-    }
-
-    this.setPredictionText(text);
     this._lastPredictionText = text;
+    this.setPredictionText(text);
     return;
   }
 
@@ -712,47 +708,54 @@ async updatePrediction() {
 
     let text = "Prédiction : incertaine";
 
-    const normalizedWinner = this.normalizePredictionWinner(data?.winner);
+    const rawWinner = data?.winner;
+    const rawMoves = data?.moves;
+    const rawMateIn = data?.mateIn;
+    const rawScore = data?.score;
 
-    if (normalizedWinner === null) {
-      if (typeof data?.score === "number") {
-        if (data.score > 0) {
-          text = "Prédiction : Rouge a l'avantage";
-        } else if (data.score < 0) {
-          text = "Prédiction : Jaune a l'avantage";
-        } else {
-          text = "Prédiction : position équilibrée";
-        }
-      } else {
-        text = "Prédiction : incertaine";
-      }
-    } else if (normalizedWinner === this.RED || normalizedWinner === this.YELLOW) {
-      const winnerName = normalizedWinner === this.RED ? "Rouge" : "Jaune";
-      const moves = Number.isInteger(data?.moves) ? data.moves : data?.mateIn;
+    let winner = undefined;
+    if (rawWinner === "R" || rawWinner === this.RED || rawWinner === "red" || rawWinner === "RED") {
+      winner = this.RED;
+    } else if (rawWinner === "Y" || rawWinner === this.YELLOW || rawWinner === "yellow" || rawWinner === "YELLOW") {
+      winner = this.YELLOW;
+    } else if (rawWinner === null || rawWinner === undefined || rawWinner === "draw" || rawWinner === "DRAW" || rawWinner === "D") {
+      winner = null;
+    }
 
-      if (Number.isInteger(moves)) {
+    const moves =
+      Number.isInteger(rawMoves) ? rawMoves :
+      Number.isInteger(rawMateIn) ? rawMateIn :
+      null;
+
+    if (winner === this.RED || winner === this.YELLOW) {
+      const winnerName = winner === this.RED ? "Rouge" : "Jaune";
+
+      if (moves !== null) {
         text = `Prédiction : ${winnerName} gagne dans ${moves} coup(s)`;
       } else {
         text = `Prédiction : avantage à ${winnerName}`;
       }
-    } else if (typeof data?.score === "number") {
-      if (data.score > 0) {
+    } else if (typeof rawScore === "number") {
+      if (rawScore > 0) {
         text = "Prédiction : Rouge a l'avantage";
-      } else if (data.score < 0) {
+      } else if (rawScore < 0) {
         text = "Prédiction : Jaune a l'avantage";
       } else {
         text = "Prédiction : position équilibrée";
       }
+    } else {
+      text = "Prédiction : incertaine";
     }
 
     if (reqId !== this.predictionReqId) return;
 
-    this.setPredictionText(text);
     this._lastPredictionText = text;
+    this.setPredictionText(text);
   } catch (e) {
     if (reqId !== this.predictionReqId) return;
-    this.setPredictionText("Prédiction : indisponible");
     this._lastPredictionText = "Prédiction : indisponible";
+    this.setPredictionText(this._lastPredictionText);
+    console.error("Erreur prediction :", e);
   }
 }
 resetPredictionDisplay() {
