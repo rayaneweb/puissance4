@@ -1,142 +1,44 @@
-import os
-import sys
-import json
-import secrets
-import re as _re
-import urllib.request as _req2
-from datetime import datetime, timezone
-from typing import Optional, List
+# app.py — Backend FastAPI pour Puissance 4
+# Routes principales :
+# - GET  /api/health
+# - POST /api/ai/move
+# - POST /api/predict
+# - POST /api/ai/reload
+# - GET  /api/games
+# - GET  /api/games/{game_id}
+# - POST /api/games
+# - DELETE /api/games/{game_id}
+# - GET  /
+# - fichiers statiques dans ./public
 
-import psycopg2
-from psycopg2.extras import RealDictCursor
-from fastapi import FastAPI, HTTPException, Query
+import os
+import json
+from datetime import datetime
+from typing import List, Optional, Any
+
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
-from dotenv import load_dotenv
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-PARENT_DIR = os.path.dirname(BASE_DIR)
-
-if PARENT_DIR not in sys.path:
-    sys.path.insert(0, PARENT_DIR)
-
-load_dotenv(os.path.join(BASE_DIR, ".env"))
+import psycopg2
+import psycopg2.extras
 
 from ia_engine import (
-    best_move,
-    predict_outcome,
-    check_win_cells,
     EMPTY,
     RED,
     YELLOW,
+    best_move,
+    predict_outcome,
     reload_model,
 )
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PUBLIC_DIR = os.path.join(BASE_DIR, "public")
 
-def runtime_env() -> str:
-    env = (
-        os.environ.get("APP_ENV")
-        or os.environ.get("NODE_ENV")
-        or (
-            "production"
-            if os.environ.get("RENDER") or os.environ.get("DATABASE_URL")
-            else "local"
-        )
-    )
-    return env.lower()
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
-
-def storage_backend() -> str:
-    return "postgres" if os.environ.get("DATABASE_URL") else "indexeddb"
-
-
-def db_conn():
-    url = os.environ.get("DATABASE_URL")
-    if not url:
-        raise RuntimeError("DATABASE_URL manquant")
-
-    if url.startswith("postgres://"):
-        url = url.replace("postgres://", "postgresql://", 1)
-
-    if "render.com" in url or "amazonaws.com" in url:
-        return psycopg2.connect(url, sslmode="require")
-
-    return psycopg2.connect(url)
-
-
-INIT_SQL = """
-CREATE TABLE IF NOT EXISTS saved_games (
-  game_id        SERIAL PRIMARY KEY,
-  save_name      TEXT,
-  rows_count     INT  NOT NULL DEFAULT 9 CHECK (rows_count BETWEEN 4 AND 20),
-  cols_count     INT  NOT NULL DEFAULT 9 CHECK (cols_count BETWEEN 4 AND 20),
-  starting_color CHAR(1) NOT NULL DEFAULT 'R' CHECK (starting_color IN ('R','Y')),
-  ai_mode        TEXT NOT NULL DEFAULT 'random',
-  ai_depth       INT  NOT NULL DEFAULT 4 CHECK (ai_depth BETWEEN 1 AND 8),
-  game_mode      INT  NOT NULL DEFAULT 2 CHECK (game_mode IN (0,1,2)),
-  status         TEXT NOT NULL DEFAULT 'in_progress',
-  winner         CHAR(1),
-  view_index     INT  NOT NULL DEFAULT 0,
-  moves          JSONB NOT NULL DEFAULT '[]'::jsonb,
-  player_red     TEXT,
-  player_yellow  TEXT,
-  confidence     INT  NOT NULL DEFAULT 1 CHECK (confidence BETWEEN 0 AND 5),
-  distinct_cols  INT  NOT NULL DEFAULT 0 CHECK (distinct_cols BETWEEN 0 AND 20),
-  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS online_games (
-  id             SERIAL PRIMARY KEY,
-  code           TEXT UNIQUE NOT NULL,
-  rows           INT  NOT NULL DEFAULT 8 CHECK (rows BETWEEN 4 AND 20),
-  cols           INT  NOT NULL DEFAULT 9 CHECK (cols BETWEEN 4 AND 20),
-  starting_color CHAR(1) NOT NULL DEFAULT 'R' CHECK (starting_color IN ('R','Y')),
-  current_turn   CHAR(1) NOT NULL DEFAULT 'R' CHECK (current_turn IN ('R','Y')),
-  status         TEXT NOT NULL DEFAULT 'waiting',
-  winner         CHAR(1),
-  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS online_players (
-  id          SERIAL PRIMARY KEY,
-  game_id     INT NOT NULL REFERENCES online_games(id) ON DELETE CASCADE,
-  player_name TEXT NOT NULL,
-  token       CHAR(1) NOT NULL,
-  secret      TEXT NOT NULL,
-  joined_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  UNIQUE(game_id, token)
-);
-
-CREATE TABLE IF NOT EXISTS online_moves (
-  id          SERIAL PRIMARY KEY,
-  game_id     INT NOT NULL REFERENCES online_games(id) ON DELETE CASCADE,
-  move_index  INT NOT NULL,
-  token       CHAR(1) NOT NULL,
-  col         INT NOT NULL,
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  UNIQUE(game_id, move_index)
-);
-
-CREATE INDEX IF NOT EXISTS idx_saved_games_created_at ON saved_games(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_online_games_code ON online_games(code);
-CREATE INDEX IF NOT EXISTS idx_online_moves_game_id ON online_moves(game_id);
-"""
-
-
-def init_db():
-    if not os.environ.get("DATABASE_URL"):
-        print("DATABASE_URL manquante, init_db ignoré")
-        return
-
-    with db_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(INIT_SQL)
-        conn.commit()
-
-
-app = FastAPI(title="Puissance 4 Web API")
+app = FastAPI(title="Puissance 4 API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -147,927 +49,447 @@ app.add_middleware(
 )
 
 
-@app.on_event("startup")
-def _startup():
-    if os.environ.get("DATABASE_URL"):
-        init_db()
-        print("Base de données initialisée")
-    else:
-        print("DATABASE_URL absente : démarrage sans base de données")
+# ══════════════════════════════════════════════════════════════
+# MODELS
+# ══════════════════════════════════════════════════════════════
 
 
-@app.get("/api/health")
-def health():
-    return {"ok": True, "time": datetime.now(timezone.utc).isoformat()}
-
-
-@app.get("/api/config")
-def app_config():
-    return {
-        "env": runtime_env(),
-        "storage": storage_backend(),
-        "has_database": bool(os.environ.get("DATABASE_URL")),
-    }
-
-
-class AIMoveReq(BaseModel):
+class AIMoveRequest(BaseModel):
     board: List[List[str]]
-    player: str = "R"
+    player: str = Field(..., pattern="^[RY]$")
     ai_mode: str = "minimax"
     depth: int = 4
 
 
-class PredictReq(BaseModel):
+class PredictRequest(BaseModel):
     board: List[List[str]]
-    player: str = "R"
-    ai_mode: str = "minimax"
-    depth: int = 8
+    player: str = Field(..., pattern="^[RY]$")
+    depth: int = 4
 
 
-def _ai_move_response(req: AIMoveReq):
-    player = req.player if req.player in (RED, YELLOW) else RED
-    ai_mode = (req.ai_mode or "minimax").lower()
-    depth = max(1, min(8, req.depth))
-
-    result = best_move(req.board, player, depth, ai_mode)
-
-    return {
-        "col": result.get("col"),
-        "scores": result.get("scores", {}),
-        "player": player,
-        "ai_mode": ai_mode,
-        "depth": depth,
-        "source": result.get("source"),
-    }
-
-
-def _predict_response(req: PredictReq):
-    player = req.player if req.player in (RED, YELLOW) else RED
-    depth = max(1, min(12, req.depth))
-
-    pred = predict_outcome(
-        req.board,
-        player,
-        depth=depth,
-        time_limit_ms=1800,
-    )
-
-    return {
-        "winner": pred.get("winner"),
-        "mateIn": pred.get("mateIn"),
-        "moves": pred.get("moves"),
-        "score": pred.get("score"),
-        "best_col": pred.get("best_col"),
-        "depth_reached": pred.get("depth_reached"),
-        "source": pred.get("source"),
-        "exact": pred.get("exact", False),
-        "player": player,
-        "ai_mode": req.ai_mode,
-        "depth": depth,
-    }
-
-
-# =========================================================
-# ROUTES IA PRINCIPALES
-# =========================================================
-
-
-@app.post("/api/ai/move")
-@app.post("/api/ai/move/")
-def ai_move(req: AIMoveReq):
-    return _ai_move_response(req)
-
-
-@app.get("/api/ai/move")
-@app.get("/api/ai/move/")
-def ai_move_get(
-    board: str = Query(..., description="JSON-encoded board"),
-    player: str = Query("R"),
-    ai_mode: str = Query("minimax"),
-    depth: int = Query(4),
-):
-    try:
-        parsed_board = json.loads(board)
-    except Exception:
-        raise HTTPException(400, "board invalide: JSON attendu")
-
-    req = AIMoveReq(board=parsed_board, player=player, ai_mode=ai_mode, depth=depth)
-    return _ai_move_response(req)
-
-
-@app.post("/api/predict")
-@app.post("/api/predict/")
-def api_predict(req: PredictReq):
-    return _predict_response(req)
-
-
-@app.get("/api/predict")
-@app.get("/api/predict/")
-def api_predict_get():
-    return {
-        "ok": False,
-        "message": "Utilise POST /api/predict avec un JSON {board, player, depth}",
-    }
-
-
-@app.post("/api/ai/reload")
-@app.post("/api/ai/reload/")
-def ai_reload():
-    ok = reload_model()
-    return {"loaded": ok}
-
-
-# =========================================================
-# ROUTES LEGACY / COMPATIBILITÉ ANCIEN FRONTEND
-# =========================================================
-
-
-@app.post("/minimax")
-@app.post("/minimax/")
-def legacy_minimax(req: AIMoveReq):
-    req.ai_mode = "minimax"
-    return _ai_move_response(req)
-
-
-@app.get("/minimax")
-@app.get("/minimax/")
-def legacy_minimax_get(
-    board: str = Query(..., description="JSON-encoded board"),
-    player: str = Query("R"),
-    depth: int = Query(4),
-):
-    try:
-        parsed_board = json.loads(board)
-    except Exception:
-        raise HTTPException(400, "board invalide: JSON attendu")
-
-    req = AIMoveReq(board=parsed_board, player=player, ai_mode="minimax", depth=depth)
-    return _ai_move_response(req)
-
-
-@app.post("/hybrid")
-@app.post("/hybrid/")
-def legacy_hybrid(req: AIMoveReq):
-    req.ai_mode = "hybrid"
-    return _ai_move_response(req)
-
-
-@app.get("/hybrid")
-@app.get("/hybrid/")
-def legacy_hybrid_get(
-    board: str = Query(..., description="JSON-encoded board"),
-    player: str = Query("R"),
-    depth: int = Query(4),
-):
-    try:
-        parsed_board = json.loads(board)
-    except Exception:
-        raise HTTPException(400, "board invalide: JSON attendu")
-
-    req = AIMoveReq(board=parsed_board, player=player, ai_mode="hybrid", depth=depth)
-    return _ai_move_response(req)
-
-
-@app.post("/trained")
-@app.post("/trained/")
-def legacy_trained(req: AIMoveReq):
-    req.ai_mode = "trained"
-    return _ai_move_response(req)
-
-
-@app.get("/trained")
-@app.get("/trained/")
-def legacy_trained_get(
-    board: str = Query(..., description="JSON-encoded board"),
-    player: str = Query("R"),
-    depth: int = Query(4),
-):
-    try:
-        parsed_board = json.loads(board)
-    except Exception:
-        raise HTTPException(400, "board invalide: JSON attendu")
-
-    req = AIMoveReq(board=parsed_board, player=player, ai_mode="trained", depth=depth)
-    return _ai_move_response(req)
-
-
-@app.post("/predict")
-@app.post("/predict/")
-def legacy_predict(req: PredictReq):
-    return _predict_response(req)
-
-
-@app.get("/predict")
-@app.get("/predict/")
-def legacy_predict_get():
-    return {
-        "ok": False,
-        "message": "Utilise POST /predict ou POST /api/predict avec un JSON {board, player, depth}",
-    }
-
-
-# =========================================================
-# SAUVEGARDE
-# =========================================================
-
-
-class SaveReq(BaseModel):
-    save_name: Optional[str] = None
+class SaveGameRequest(BaseModel):
+    user_id: Optional[int] = 1
+    save_name: str = "partie"
+    game_index: int = 1
     rows_count: int
     cols_count: int
-    starting_color: str = "R"
+    starting_color: str = Field(..., pattern="^[RY]$")
+    control_red: str = "human"
+    control_yellow: str = "ai"
     ai_mode: str = "random"
     ai_depth: int = 4
-    game_mode: int = 2
+    game_mode: int = 1
     status: str = "in_progress"
     winner: Optional[str] = None
     view_index: int = 0
     moves: List[int] = []
-    player_red: Optional[str] = None
-    player_yellow: Optional[str] = None
     confidence: int = 1
-    game_index: int = 1
-    distinct_cols: Optional[int] = None
+    distinct_cols: int = 0
+    player_red: Optional[str] = "Joueur Rouge"
+    player_yellow: Optional[str] = "Joueur Jaune"
 
 
-@app.post("/api/games")
-def save_game(req: SaveReq):
-    if not os.environ.get("DATABASE_URL"):
-        raise HTTPException(503, "Base de données indisponible")
+# ══════════════════════════════════════════════════════════════
+# DB
+# ══════════════════════════════════════════════════════════════
 
-    if req.starting_color not in (RED, YELLOW):
-        raise HTTPException(400, "starting_color invalide")
 
-    if req.winner not in (None, RED, YELLOW, "D"):
-        raise HTTPException(400, "winner invalide")
+def get_db_conn():
+    if not DATABASE_URL:
+        return None
+    return psycopg2.connect(DATABASE_URL, sslmode="require")
 
-    if not (4 <= req.rows_count <= 20 and 4 <= req.cols_count <= 20):
-        raise HTTPException(400, "taille invalide")
 
-    if not (1 <= req.ai_depth <= 8):
-        raise HTTPException(400, "ai_depth invalide")
+def ensure_db():
+    conn = get_db_conn()
+    if conn is None:
+        print("[app] DATABASE_URL absent -> stockage DB désactivé")
+        return
 
-    if req.game_mode not in (0, 1, 2):
-        raise HTTPException(400, "game_mode invalide")
-
-    if req.status not in ("in_progress", "completed", "aborted"):
-        raise HTTPException(400, "status invalide")
-
-    for m in req.moves:
-        if not isinstance(m, int) or m < 0 or m >= req.cols_count:
-            raise HTTPException(400, f"move invalide: {m}")
-
-    distinct = len(set(req.moves)) if req.moves else 0
-    confidence = max(0, min(5, req.confidence))
-
-    with db_conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
-                INSERT INTO saved_games
-                (
-                    save_name, rows_count, cols_count, starting_color,
-                    ai_mode, ai_depth, game_mode, status, winner,
-                    view_index, moves, player_red, player_yellow,
-                    confidence, distinct_cols
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS saved_games (
+                        game_id SERIAL PRIMARY KEY,
+                        user_id INTEGER DEFAULT 1,
+                        save_name TEXT NOT NULL DEFAULT 'partie',
+                        game_index INTEGER NOT NULL DEFAULT 1,
+                        rows_count INTEGER NOT NULL CHECK (rows_count BETWEEN 4 AND 20),
+                        cols_count INTEGER NOT NULL CHECK (cols_count BETWEEN 4 AND 20),
+                        starting_color CHAR(1) NOT NULL CHECK (starting_color IN ('R','Y')),
+                        control_red TEXT NOT NULL DEFAULT 'human',
+                        control_yellow TEXT NOT NULL DEFAULT 'ai',
+                        ai_mode TEXT NOT NULL DEFAULT 'random',
+                        ai_depth INTEGER NOT NULL DEFAULT 4,
+                        game_mode INTEGER NOT NULL DEFAULT 1,
+                        status TEXT NOT NULL DEFAULT 'in_progress',
+                        winner CHAR(1),
+                        view_index INTEGER NOT NULL DEFAULT 0,
+                        moves JSONB NOT NULL DEFAULT '[]'::jsonb,
+                        confidence INTEGER NOT NULL DEFAULT 1,
+                        distinct_cols INTEGER NOT NULL DEFAULT 0,
+                        player_red TEXT,
+                        player_yellow TEXT,
+                        created_at TIMESTAMP NOT NULL DEFAULT NOW()
+                    );
+                    """
                 )
-                VALUES
-                (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                RETURNING game_id
-                """,
-                (
-                    req.save_name,
-                    req.rows_count,
-                    req.cols_count,
-                    req.starting_color,
-                    req.ai_mode,
-                    req.ai_depth,
-                    req.game_mode,
-                    req.status,
-                    req.winner,
-                    req.view_index,
-                    json.dumps(req.moves),
-                    req.player_red,
-                    req.player_yellow,
-                    confidence,
-                    distinct,
-                ),
-            )
-            gid = cur.fetchone()["game_id"]
-        conn.commit()
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_saved_games_created_at
+                    ON saved_games(created_at DESC);
+                    """
+                )
+        print("[app] Base prête")
+    finally:
+        conn.close()
 
-    return {"game_id": gid}
+
+@app.on_event("startup")
+def startup():
+    ensure_db()
+
+
+# ══════════════════════════════════════════════════════════════
+# VALIDATION
+# ══════════════════════════════════════════════════════════════
+
+
+def validate_board(board: List[List[str]]) -> tuple[int, int]:
+    if not board or not isinstance(board, list):
+        raise HTTPException(status_code=400, detail="board invalide")
+    if not all(isinstance(row, list) for row in board):
+        raise HTTPException(status_code=400, detail="board invalide")
+
+    rows = len(board)
+    cols = len(board[0]) if rows else 0
+
+    if rows < 4 or cols < 4:
+        raise HTTPException(status_code=400, detail="taille de plateau invalide")
+
+    for row in board:
+        if len(row) != cols:
+            raise HTTPException(status_code=400, detail="board non rectangulaire")
+        for cell in row:
+            if cell not in (EMPTY, RED, YELLOW):
+                raise HTTPException(status_code=400, detail="cellule invalide")
+
+    return rows, cols
+
+
+# ══════════════════════════════════════════════════════════════
+# ROUTES API
+# ══════════════════════════════════════════════════════════════
+
+
+@app.get("/api/health")
+def api_health():
+    return {
+        "ok": True,
+        "time": datetime.utcnow().isoformat() + "Z",
+        "database": bool(DATABASE_URL),
+    }
+
+
+@app.post("/api/ai/move")
+def api_ai_move(payload: AIMoveRequest):
+    validate_board(payload.board)
+
+    depth = max(1, min(int(payload.depth), 12))
+    ai_mode = (payload.ai_mode or "minimax").lower()
+
+    try:
+        result = best_move(
+            board=payload.board,
+            player=payload.player,
+            depth=depth,
+            ai_mode=ai_mode,
+            time_limit_ms=1800,
+        )
+
+        return {
+            "col": result.get("col"),
+            "scores": result.get("scores", {}),
+            "player": payload.player,
+            "ai_mode": ai_mode,
+            "depth": depth,
+            "source": result.get("source", "unknown"),
+            "depth_reached": result.get("depth_reached", 0),
+            "distance": result.get("distance"),
+            "distances": result.get("distances", {}),
+        }
+    except Exception as e:
+        print(f"[app] /api/ai/move error: {e}")
+        return JSONResponse(
+            status_code=200,
+            content={
+                "col": None,
+                "scores": {},
+                "player": payload.player,
+                "ai_mode": ai_mode,
+                "depth": depth,
+                "source": f"error:{type(e).__name__}",
+                "depth_reached": 0,
+                "distance": None,
+                "distances": {},
+            },
+        )
+
+
+@app.post("/api/predict")
+def api_predict(payload: PredictRequest):
+    validate_board(payload.board)
+
+    depth = max(1, min(int(payload.depth), 12))
+
+    try:
+        result = predict_outcome(
+            board=payload.board,
+            player=payload.player,
+            depth=depth,
+            time_limit_ms=1800,
+        )
+
+        return {
+            "winner": result.get("winner"),
+            "moves": result.get("moves"),
+            "mateIn": result.get("mateIn"),
+            "score": result.get("score", 0),
+            "depth_reached": result.get("depth_reached", 0),
+            "best_col": result.get("best_col"),
+            "source": result.get("source", "predict"),
+            "exact": bool(result.get("exact", False)),
+        }
+    except Exception as e:
+        print(f"[app] /api/predict error: {e}")
+        # Très important : on renvoie 200 avec un objet propre
+        # pour éviter le HTTP 502 dans le front.
+        return {
+            "winner": None,
+            "moves": None,
+            "mateIn": None,
+            "score": 0,
+            "depth_reached": 0,
+            "best_col": None,
+            "source": f"error:{type(e).__name__}",
+            "exact": False,
+        }
+
+
+@app.post("/api/ai/reload")
+def api_ai_reload():
+    ok = reload_model()
+    return {"ok": ok}
 
 
 @app.get("/api/games")
-def list_games():
-    if not os.environ.get("DATABASE_URL"):
-        raise HTTPException(503, "Base de données indisponible")
+def api_list_games():
+    conn = get_db_conn()
+    if conn is None:
+        return []
 
-    with db_conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
                 """
                 SELECT
                     game_id,
+                    user_id,
                     save_name,
+                    game_index,
                     rows_count,
                     cols_count,
                     starting_color,
+                    control_red,
+                    control_yellow,
                     ai_mode,
                     ai_depth,
                     game_mode,
                     status,
                     winner,
                     view_index,
-                    COALESCE(confidence,1) AS confidence,
-                    COALESCE(distinct_cols,0) AS distinct_cols,
-                    jsonb_array_length(moves) AS total_moves,
-                    created_at,
+                    moves,
+                    confidence,
+                    distinct_cols,
                     player_red,
-                    player_yellow
+                    player_yellow,
+                    created_at
                 FROM saved_games
                 ORDER BY created_at DESC
-                LIMIT 200
+                LIMIT 500
                 """
             )
-            return cur.fetchall()
+            rows = cur.fetchall()
+
+        out = []
+        for row in rows:
+            item = dict(row)
+            if isinstance(item.get("moves"), str):
+                try:
+                    item["moves"] = json.loads(item["moves"])
+                except Exception:
+                    item["moves"] = []
+            item["total_moves"] = len(item.get("moves") or [])
+            out.append(item)
+
+        return out
+    finally:
+        conn.close()
 
 
 @app.get("/api/games/{game_id}")
-def get_game(game_id: int):
-    if not os.environ.get("DATABASE_URL"):
-        raise HTTPException(503, "Base de données indisponible")
+def api_get_game(game_id: int):
+    conn = get_db_conn()
+    if conn is None:
+        raise HTTPException(status_code=404, detail="base indisponible")
 
-    with db_conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT * FROM saved_games WHERE game_id=%s", (game_id,))
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT
+                    game_id,
+                    user_id,
+                    save_name,
+                    game_index,
+                    rows_count,
+                    cols_count,
+                    starting_color,
+                    control_red,
+                    control_yellow,
+                    ai_mode,
+                    ai_depth,
+                    game_mode,
+                    status,
+                    winner,
+                    view_index,
+                    moves,
+                    confidence,
+                    distinct_cols,
+                    player_red,
+                    player_yellow,
+                    created_at
+                FROM saved_games
+                WHERE game_id = %s
+                """,
+                (game_id,),
+            )
             row = cur.fetchone()
-            if not row:
-                raise HTTPException(404, "Partie introuvable")
-            return row
+
+        if not row:
+            raise HTTPException(status_code=404, detail="partie introuvable")
+
+        item = dict(row)
+        if isinstance(item.get("moves"), str):
+            try:
+                item["moves"] = json.loads(item["moves"])
+            except Exception:
+                item["moves"] = []
+        return item
+    finally:
+        conn.close()
+
+
+@app.post("/api/games")
+def api_save_game(payload: SaveGameRequest):
+    conn = get_db_conn()
+    if conn is None:
+        return {"ok": False, "message": "base indisponible"}
+
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO saved_games (
+                        user_id,
+                        save_name,
+                        game_index,
+                        rows_count,
+                        cols_count,
+                        starting_color,
+                        control_red,
+                        control_yellow,
+                        ai_mode,
+                        ai_depth,
+                        game_mode,
+                        status,
+                        winner,
+                        view_index,
+                        moves,
+                        confidence,
+                        distinct_cols,
+                        player_red,
+                        player_yellow
+                    )
+                    VALUES (
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s
+                    )
+                    RETURNING game_id
+                    """,
+                    (
+                        payload.user_id,
+                        payload.save_name,
+                        payload.game_index,
+                        payload.rows_count,
+                        payload.cols_count,
+                        payload.starting_color,
+                        payload.control_red,
+                        payload.control_yellow,
+                        payload.ai_mode,
+                        payload.ai_depth,
+                        payload.game_mode,
+                        payload.status,
+                        payload.winner,
+                        payload.view_index,
+                        json.dumps(payload.moves),
+                        payload.confidence,
+                        payload.distinct_cols,
+                        payload.player_red,
+                        payload.player_yellow,
+                    ),
+                )
+                game_id = cur.fetchone()[0]
+
+        return {"ok": True, "game_id": game_id}
+    finally:
+        conn.close()
 
 
 @app.delete("/api/games/{game_id}")
-def delete_game(game_id: int):
-    if not os.environ.get("DATABASE_URL"):
-        raise HTTPException(503, "Base de données indisponible")
-
-    with db_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "DELETE FROM saved_games WHERE game_id=%s RETURNING game_id",
-                (game_id,),
-            )
-            deleted = cur.fetchone()
-            if not deleted:
-                raise HTTPException(404, "Partie introuvable")
-        conn.commit()
-
-    return {"deleted": game_id}
-
-
-@app.post("/api/games/position")
-def game_position(req: dict):
-    if not os.environ.get("DATABASE_URL"):
-        raise HTTPException(503, "Base de données indisponible")
-
-    game_id = req.get("game_id")
-    view_index = req.get("view_index", 0)
-
-    if not isinstance(game_id, int):
-        raise HTTPException(400, "game_id invalide")
-
-    with db_conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                "SELECT rows_count, cols_count, starting_color, moves FROM saved_games WHERE game_id=%s",
-                (game_id,),
-            )
-            g = cur.fetchone()
-
-    if not g:
-        raise HTTPException(404, "Partie introuvable")
-
-    rows = g["rows_count"]
-    cols = g["cols_count"]
-    start = g["starting_color"]
-    moves = (
-        g["moves"] if isinstance(g["moves"], list) else json.loads(g["moves"] or "[]")
-    )
-
-    vi = max(0, min(int(view_index), len(moves)))
-    board = [[EMPTY] * cols for _ in range(rows)]
-
-    current = start
-    last_r = -1
-    last_c = -1
-
-    for i in range(vi):
-        col = moves[i]
-        for r in range(rows - 1, -1, -1):
-            if board[r][col] == EMPTY:
-                board[r][col] = current
-                if i == vi - 1:
-                    last_r, last_c = r, col
-                break
-        current = YELLOW if current == RED else RED
-
-    win_cells = []
-    winner = None
-    if last_r >= 0:
-        cells = check_win_cells(board, last_r, last_c, board[last_r][last_c])
-        if cells:
-            win_cells = cells
-            winner = board[last_r][last_c]
-
-    return {
-        "board": board,
-        "view_index": vi,
-        "total_moves": len(moves),
-        "to_play": current,
-        "last_col": last_c if vi > 0 else None,
-        "winner": winner,
-        "win_cells": win_cells,
-        "filled_cells": sum(1 for row in board for cell in row if cell != EMPTY),
-        "legal_cols": sum(1 for c in range(cols) if board[0][c] == EMPTY),
-    }
-
-
-# =========================================================
-# IMPORT BGA
-# =========================================================
-
-
-class BGAReq(BaseModel):
-    table_id: str
-
-
-@app.post("/api/bga/import")
-def bga_import(req: BGAReq):
-    if not os.environ.get("DATABASE_URL"):
-        raise HTTPException(503, "Base de données indisponible")
-
-    tid = req.table_id.strip()
-    if not tid.isdigit():
-        raise HTTPException(400, "Numéro invalide")
-
-    with db_conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                "SELECT game_id, rows_count, cols_count, moves FROM saved_games WHERE save_name=%s LIMIT 1",
-                (f"BGA_{tid}",),
-            )
-            existing = cur.fetchone()
-
-    if existing:
-        moves = (
-            existing["moves"]
-            if isinstance(existing["moves"], list)
-            else json.loads(existing["moves"] or "[]")
-        )
-        return {
-            "game_id": existing["game_id"],
-            "rows": existing["rows_count"],
-            "cols": existing["cols_count"],
-            "moves": moves,
-            "cached": True,
-        }
+def api_delete_game(game_id: int):
+    conn = get_db_conn()
+    if conn is None:
+        raise HTTPException(status_code=404, detail="base indisponible")
 
     try:
-        rq = _req2.Request(
-            f"https://boardgamearena.com/gamereview?table={tid}",
-            headers={"User-Agent": "Mozilla/5.0 (compatible; P4Bot/1.0)"},
-        )
-        with _req2.urlopen(rq, timeout=15) as resp:
-            html = resp.read().decode("utf-8", errors="replace")
-    except Exception as e:
-        raise HTTPException(502, f"Impossible de contacter BGA : {e}")
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM saved_games WHERE game_id = %s", (game_id,))
+                deleted = cur.rowcount
 
-    moves = []
-    for pat in (
-        _re.compile(r"place[rz]?\s+un\s+pion\s+dans\s+la\s+colonne\s+(\d+)", _re.I),
-        _re.compile(
-            r"(?:drops?\s+(?:a\s+)?(?:piece|token|disc)\s+(?:in(?:to)?\s+)?(?:column\s+)?|column\s+)(\d+)",
-            _re.I,
-        ),
-    ):
-        found = [int(m.group(1)) for m in pat.finditer(html)]
-        if found:
-            moves = found
-            break
+        if deleted == 0:
+            raise HTTPException(status_code=404, detail="partie introuvable")
 
-    if not moves:
-        raise HTTPException(404, "Aucun coup trouvé — partie privée ?")
+        return {"ok": True, "deleted": game_id}
+    finally:
+        conn.close()
 
-    if min(moves) >= 1 and max(moves) <= 20:
-        moves = [c - 1 for c in moves]
 
-    rows, cols = 9, 9
-    sm = _re.search(r"(\d{1,2})\s*[x×]\s*(\d{1,2})", html, _re.I)
-    if sm:
-        rr, cc = int(sm.group(1)), int(sm.group(2))
-        if 4 <= rr <= 20 and 4 <= cc <= 20:
-            rows, cols = rr, cc
+# ══════════════════════════════════════════════════════════════
+# FICHIERS STATIQUES
+# ══════════════════════════════════════════════════════════════
 
-    with db_conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
-                INSERT INTO saved_games
-                (
-                    save_name, rows_count, cols_count, starting_color,
-                    ai_mode, ai_depth, game_mode, status, view_index,
-                    moves, distinct_cols
-                )
-                VALUES (%s,%s,%s,'R','bga',4,2,'completed',%s,%s,%s)
-                RETURNING game_id
-                """,
-                (
-                    f"BGA_{tid}",
-                    rows,
-                    cols,
-                    len(moves),
-                    json.dumps(moves),
-                    len(set(moves)),
-                ),
-            )
-            gid = cur.fetchone()["game_id"]
-        conn.commit()
-
-    return {
-        "game_id": gid,
-        "rows": rows,
-        "cols": cols,
-        "moves": moves,
-        "cached": False,
-    }
-
-
-# =========================================================
-# OUTILS ONLINE
-# =========================================================
-
-
-def _mk(rows, cols):
-    return [[EMPTY] * cols for _ in range(rows)]
-
-
-def _drop(board, col, token):
-    if col < 0 or col >= len(board[0]):
-        raise ValueError("colonne invalide")
-
-    for r in range(len(board) - 1, -1, -1):
-        if board[r][col] == EMPTY:
-            board[r][col] = token
-            return r
-    raise ValueError("colonne pleine")
-
-
-def _win(board):
-    rows, cols = len(board), len(board[0])
-
-    for r in range(rows):
-        for c in range(cols):
-            t = board[r][c]
-            if t not in (RED, YELLOW):
-                continue
-            for dr, dc in [(0, 1), (1, 0), (1, 1), (1, -1)]:
-                ok = True
-                for k in range(1, 4):
-                    nr, nc = r + dr * k, c + dc * k
-                    if not (0 <= nr < rows and 0 <= nc < cols) or board[nr][nc] != t:
-                        ok = False
-                        break
-                if ok:
-                    return t
-
-    if all(board[0][c] != EMPTY for c in range(cols)):
-        return "D"
-
-    return None
-
-
-def _rebuild(rows, cols, moves):
-    board = _mk(rows, cols)
-    for m in moves:
-        _drop(board, m["col"], m["token"])
-    return board
-
-
-def _code():
-    return secrets.token_urlsafe(6).replace("-", "").replace("_", "")[:8].upper()
-
-
-class CreateOnlineReq(BaseModel):
-    player_name: str = Field(min_length=1, max_length=40)
-    rows: int = 8
-    cols: int = 9
-    starting_color: str = "R"
-
-
-class JoinOnlineReq(BaseModel):
-    code: str = Field(min_length=4, max_length=16)
-    player_name: str = Field(min_length=1, max_length=40)
-
-
-class MoveReq(BaseModel):
-    player_secret: str = Field(min_length=10, max_length=200)
-    col: int
-
-
-@app.post("/api/online/create")
-def online_create(req: CreateOnlineReq):
-    if not os.environ.get("DATABASE_URL"):
-        raise HTTPException(503, "Base de données indisponible")
-
-    code = _code()
-    secret = secrets.token_urlsafe(24)
-    rows = max(4, min(20, req.rows))
-    cols = max(4, min(20, req.cols))
-    start = req.starting_color if req.starting_color in (RED, YELLOW) else RED
-
-    with db_conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
-                INSERT INTO online_games(code, rows, cols, starting_color, current_turn, status)
-                VALUES(%s,%s,%s,%s,%s,'waiting')
-                RETURNING id, code, rows, cols, starting_color
-                """,
-                (code, rows, cols, start, start),
-            )
-            g = cur.fetchone()
-
-            cur.execute(
-                """
-                INSERT INTO online_players(game_id, player_name, token, secret)
-                VALUES(%s,%s,%s,%s)
-                RETURNING token
-                """,
-                (g["id"], req.player_name.strip(), g["starting_color"], secret),
-            )
-            pl = cur.fetchone()
-
-        conn.commit()
-
-    return {
-        "code": g["code"],
-        "rows": g["rows"],
-        "cols": g["cols"],
-        "starting_color": g["starting_color"],
-        "your_token": pl["token"],
-        "player_secret": secret,
-        "share_url": f"/?join={g['code']}",
-    }
-
-
-@app.post("/api/online/join")
-def online_join(req: JoinOnlineReq):
-    if not os.environ.get("DATABASE_URL"):
-        raise HTTPException(503, "Base de données indisponible")
-
-    code = req.code.strip().upper()
-    secret = secrets.token_urlsafe(24)
-
-    with db_conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT * FROM online_games WHERE code=%s", (code,))
-            g = cur.fetchone()
-            if not g:
-                raise HTTPException(404, "Code introuvable")
-
-            cur.execute("SELECT token FROM online_players WHERE game_id=%s", (g["id"],))
-            tokens = {r["token"] for r in cur.fetchall()}
-
-            token = "R" if "R" not in tokens else ("Y" if "Y" not in tokens else "S")
-
-            cur.execute(
-                """
-                INSERT INTO online_players(game_id, player_name, token, secret)
-                VALUES(%s,%s,%s,%s)
-                RETURNING token
-                """,
-                (g["id"], req.player_name.strip(), token, secret),
-            )
-            pl = cur.fetchone()
-
-            if token in (RED, YELLOW):
-                cur.execute(
-                    "SELECT COUNT(*) AS c FROM online_players WHERE game_id=%s AND token IN('R','Y')",
-                    (g["id"],),
-                )
-                if cur.fetchone()["c"] == 2 and g["status"] == "waiting":
-                    cur.execute(
-                        "UPDATE online_games SET status='playing' WHERE id=%s",
-                        (g["id"],),
-                    )
-
-        conn.commit()
-
-    return {
-        "code": code,
-        "rows": g["rows"],
-        "cols": g["cols"],
-        "starting_color": g["starting_color"],
-        "your_token": pl["token"],
-        "player_secret": secret,
-    }
-
-
-@app.get("/api/online/{code}/state")
-def online_state(code: str):
-    if not os.environ.get("DATABASE_URL"):
-        raise HTTPException(503, "Base de données indisponible")
-
-    code = code.strip().upper()
-
-    with db_conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT * FROM online_games WHERE code=%s", (code,))
-            g = cur.fetchone()
-            if not g:
-                raise HTTPException(404, "Partie introuvable")
-
-            cur.execute(
-                "SELECT move_index, token, col FROM online_moves WHERE game_id=%s ORDER BY move_index",
-                (g["id"],),
-            )
-            moves = cur.fetchall()
-
-            cur.execute(
-                "SELECT token, player_name FROM online_players WHERE game_id=%s ORDER BY id",
-                (g["id"],),
-            )
-            players = cur.fetchall()
-
-    return {
-        "code": code,
-        "rows": g["rows"],
-        "cols": g["cols"],
-        "starting_color": g["starting_color"],
-        "current_turn": g["current_turn"],
-        "status": g["status"],
-        "winner": g["winner"],
-        "moves": [
-            {"move_index": m["move_index"], "token": m["token"], "col": m["col"]}
-            for m in moves
-        ],
-        "players": players,
-    }
-
-
-@app.post("/api/online/{code}/move")
-def online_move(code: str, req: MoveReq):
-    if not os.environ.get("DATABASE_URL"):
-        raise HTTPException(503, "Base de données indisponible")
-
-    code = code.strip().upper()
-
-    with db_conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT * FROM online_games WHERE code=%s FOR UPDATE", (code,))
-            g = cur.fetchone()
-            if not g:
-                raise HTTPException(404, "Partie introuvable")
-
-            if g["status"] == "finished":
-                raise HTTPException(409, "Partie terminée")
-
-            cur.execute(
-                "SELECT * FROM online_players WHERE game_id=%s AND secret=%s",
-                (g["id"], req.player_secret),
-            )
-            p = cur.fetchone()
-            if not p:
-                raise HTTPException(401, "Joueur non reconnu")
-
-            token = p["token"]
-            if token not in (RED, YELLOW):
-                raise HTTPException(403, "Spectateur")
-
-            if token != g["current_turn"]:
-                raise HTTPException(409, "Pas ton tour")
-
-            cur.execute(
-                "SELECT move_index, token, col FROM online_moves WHERE game_id=%s ORDER BY move_index",
-                (g["id"],),
-            )
-            mvs = cur.fetchall()
-
-            board = _rebuild(g["rows"], g["cols"], mvs)
-
-            try:
-                _drop(board, req.col, token)
-            except ValueError as e:
-                raise HTTPException(409, str(e))
-
-            cur.execute(
-                "INSERT INTO online_moves(game_id, move_index, token, col) VALUES(%s,%s,%s,%s)",
-                (g["id"], len(mvs), token, req.col),
-            )
-
-            w = _win(board)
-            if w:
-                cur.execute(
-                    "UPDATE online_games SET status='finished', winner=%s WHERE id=%s",
-                    (w, g["id"]),
-                )
-                next_turn = g["current_turn"]
-            else:
-                next_turn = YELLOW if token == RED else RED
-                cur.execute(
-                    "UPDATE online_games SET current_turn=%s, status='playing' WHERE id=%s",
-                    (next_turn, g["id"]),
-                )
-
-        conn.commit()
-
-    return {"ok": True, "next_turn": next_turn}
-
-
-class RematchReq(BaseModel):
-    player_secret: str = Field(min_length=10, max_length=200)
-
-
-@app.post("/api/online/{code}/rematch")
-def online_rematch(code: str, req: RematchReq):
-    if not os.environ.get("DATABASE_URL"):
-        raise HTTPException(503, "Base de données indisponible")
-
-    code = code.strip().upper()
-
-    with db_conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT * FROM online_games WHERE code=%s FOR UPDATE", (code,))
-            g = cur.fetchone()
-            if not g:
-                raise HTTPException(404, "Partie introuvable")
-
-            cur.execute(
-                "SELECT * FROM online_players WHERE game_id=%s AND secret=%s",
-                (g["id"], req.player_secret),
-            )
-            p = cur.fetchone()
-            if not p:
-                raise HTTPException(401, "Joueur non reconnu")
-            if p["token"] not in (RED, YELLOW):
-                raise HTTPException(403, "Spectateur ne peut pas relancer")
-
-            if g["status"] not in ("finished", "aborted", "waiting"):
-                raise HTTPException(409, "La partie est encore en cours")
-
-            new_start = YELLOW if g["starting_color"] == RED else RED
-
-            cur.execute(
-                """
-                UPDATE online_games
-                SET status='playing',
-                    winner=NULL,
-                    current_turn=%s,
-                    starting_color=%s
-                WHERE id=%s
-                """,
-                (new_start, new_start, g["id"]),
-            )
-
-            cur.execute("DELETE FROM online_moves WHERE game_id=%s", (g["id"],))
-
-        conn.commit()
-
-    return {"ok": True, "new_starting_color": new_start}
-
-
-# =========================================================
-# FICHIERS PUBLICS / FRONT
-# =========================================================
-
-PUBLIC_DIR = os.path.join(BASE_DIR, "public")
+if os.path.isdir(PUBLIC_DIR):
+    app.mount("/", StaticFiles(directory=PUBLIC_DIR, html=True), name="public")
 
 
 @app.get("/")
-def serve_index():
+def root():
     index_path = os.path.join(PUBLIC_DIR, "index.html")
-    if not os.path.isfile(index_path):
-        raise HTTPException(500, "public/index.html introuvable")
-    return FileResponse(index_path)
-
-
-if os.path.isdir(PUBLIC_DIR):
-    app.mount("/public", StaticFiles(directory=PUBLIC_DIR), name="public")
-
-
-@app.get("/{full_path:path}")
-def spa_fallback(full_path: str):
-    if full_path.startswith("api/"):
-        raise HTTPException(404, "Route API introuvable")
-
-    target = os.path.join(PUBLIC_DIR, full_path)
-    if os.path.isfile(target):
-        return FileResponse(target)
-
-    index_path = os.path.join(PUBLIC_DIR, "index.html")
-    if os.path.isfile(index_path):
+    if os.path.exists(index_path):
         return FileResponse(index_path)
-
-    raise HTTPException(404, "Fichier introuvable")
+    return {"ok": True, "message": "public/index.html introuvable"}

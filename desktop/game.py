@@ -418,17 +418,33 @@ class Connect4App(tk.Tk):
         source = result.get("source", "")
         depth_reached = result.get("depth_reached", 0)
         best_col = result.get("best_col")
+        exact = bool(result.get("exact", False))
 
         if winner is None:
-            txt = f"Prédiction : position équilibrée (score {score})"
+            if abs(score) <= 120:
+                txt = f"Prédiction : position équilibrée (score {score})"
+            else:
+                txt = f"Prédiction : issue incertaine (score {score})"
+
             if best_col is not None:
                 txt += f" — meilleur coup: colonne {best_col + 1}"
+
         else:
             name = "Rouge" if winner == self.RED else "Jaune"
-            if moves is None:
-                txt = f"Prédiction : {name} a l’avantage (score {score})"
+
+            if exact:
+                if moves is not None:
+                    txt = f"Prédiction : {name} gagne dans {moves} coup(s) (score {score})"
+                else:
+                    txt = f"Prédiction : {name} gagne (suite forcée détectée) (score {score})"
             else:
-                txt = f"Prédiction : {name} gagne dans {moves} demi-coup(s) (score {score})"
+                if moves is not None:
+                    txt = f"Prédiction : {name} probablement gagnant dans ~{moves} coup(s) (score {score})"
+                else:
+                    txt = f"Prédiction : {name} a l’avantage (score {score})"
+
+            if best_col is not None:
+                txt += f" — meilleur coup: colonne {best_col + 1}"
 
         self.prediction_var.set(txt)
         self.engine_info_var.set(
