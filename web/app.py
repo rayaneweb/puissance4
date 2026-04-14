@@ -250,49 +250,45 @@ def api_ai_move(payload: AIMoveRequest):
 
 
 @app.get("/api/predict")
-def api_predict_get(board: str, player: str, depth: int = 8):
+def api_predict(board: str, player: str, depth: int = 6):
     try:
-        parsed_board = json.loads(board)
-    except Exception:
+        board = json.loads(board)
+    except:
         raise HTTPException(status_code=400, detail="board invalide")
-
-    validate_board(parsed_board)
 
     if player not in ("R", "Y"):
         raise HTTPException(status_code=400, detail="player invalide")
 
-    depth = max(4, min(int(depth), 12))
-
     try:
         result = predict_outcome(
-            board=parsed_board,
+            board=board,
             player=player,
             depth=depth,
-            time_limit_ms=8000,
+            time_limit_ms=1200,  # ⚡ RAPIDE (important)
         )
+
+        # 🔥 fallback si IA ne trouve rien
+        if result is None:
+            return {
+                "winner": None,
+                "moves": None,
+                "score": 0,
+                "best_col": None,
+            }
 
         return {
             "winner": result.get("winner"),
             "moves": result.get("moves"),
-            "mateIn": result.get("mateIn"),
-            "score": result.get("score", 0),
-            "depth_reached": result.get("depth_reached", depth),
+            "score": result.get("score"),
             "best_col": result.get("best_col"),
-            "source": result.get("source", "predict"),
-            "exact": bool(result.get("exact", False)),
         }
 
     except Exception as e:
-        print(f"[app] /api/predict GET error: {e}")
         return {
             "winner": None,
             "moves": None,
-            "mateIn": None,
             "score": 0,
-            "depth_reached": 0,
             "best_col": None,
-            "source": f"error:{type(e).__name__}",
-            "exact": False,
         }
 
 

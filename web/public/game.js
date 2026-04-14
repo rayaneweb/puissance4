@@ -672,184 +672,53 @@ async requestPrediction(payload) {
 async updatePrediction() {
   if (!this.el.predictionText) return;
 
-  const reqId = ++this.predictionReqId;
-
   if (!this.board) {
     this.setPredictionText("Prédiction : ...");
     return;
   }
 
-  const hasAnyMove = this.board.some(row => row.some(cell => cell !== this.EMPTY));
-  if (!hasAnyMove) {
-    this.setPredictionText("Prédiction : ...");
-    return;
-  }
-
-  if (this.gameOver) {
-    if (this.winner === this.RED) {
-      this.setPredictionText("Prédiction : Rouge a gagné");
-    } else if (this.winner === this.YELLOW) {
-      this.setPredictionText("Prédiction : Jaune a gagné");
-    } else {
-      this.setPredictionText("Prédiction : Match nul");
-    }
-    return;
-  }
-
-  const withTimeout = (promise, ms, label = "timeout") =>
-    Promise.race([
-      promise,
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error(label)), ms)
-      ),
-    ]);
-
-  const current = this.current;
-  const opp = this.other(current);
-
-  // 1) vérification tactique locale immédiate
-  const immediateWin = this.findImmediateWinningMoveLocal(this.board, current);
-  if (immediateWin !== null) {
-    const winnerName = current === this.RED ? "Rouge" : "Jaune";
-    this.setPredictionText(
-      `Prédiction : ${winnerName} gagne dans 1 coup — meilleur coup : colonne ${immediateWin + 1} — coup gagnant`
-    );
-    return;
-  }
-
-  const immediateBlock = this.findImmediateBlockingMoveLocal(this.board, current);
-  if (immediateBlock !== null) {
-    const oppName = opp === this.RED ? "Rouge" : "Jaune";
-    this.setPredictionText(
-      `Prédiction : ${oppName} menace de gagner — meilleur coup : colonne ${immediateBlock + 1} — blocage obligatoire`
-    );
-    return;
-  }
-
-  this.setPredictionText("Prédiction : analyse...");
-
-  let bestCol = null;
-  let bestWeight = null;
-  let moveSource = null;
-
-  // 2) meilleur coup backend
   try {
-    const params = new URLSearchParams({
-      board: JSON.stringify(this.board),
-      player: current,
-      ai_mode: "minimax",
-      depth: "5",
-    });
-
-    const moveData = await withTimeout(
-      this.apiFetch(`/ai/move?${params.toString()}`, {
-        method: "GET",
-      }),
-      2500,
-      "ai move timeout"
+    const res = await fetch(
+      `/api/predict?board=${encodeURIComponent(JSON.stringify(this.board))}&player=${this.currentPlayer}&depth=6`
     );
 
-    if (reqId !== this.predictionReqId) return;
+    if (!res.ok) throw new Error("API error");
 
-    bestCol =
-      Number.isInteger(moveData?.col) ? moveData.col :
-      Number.isInteger(moveData?.best_col) ? moveData.best_col :
-      null;
+    const data = await res.json();
 
-    moveSource = moveData?.source || null;
+    let text = "";
 
-    const scores = moveData?.scores || {};
-    if (bestCol !== null && Object.prototype.hasOwnProperty.call(scores, bestCol)) {
-      const raw = Number(scores[bestCol]);
-      if (!Number.isNaN(raw)) {
-        bestWeight = raw;
+    // 🎯 CAS 1 : victoire détectée
+    if (data.winner) {
+      const color = data.winner === "R" ? "Rouge" : "Jaune";
+
+      if (data.moves !== null) {
+        text = `🔥 ${color} gagne dans ${data.moves} coup(s)`;
+      } else {
+        text = `🔥 ${color} a l'avantage`;
       }
     }
 
-  } catch (e) {
-    console.warn("best move error:", e);
-  }
-
-  if (reqId !== this.predictionReqId) return;
-
-  // 3) prédiction backend
-  try {
-    const pred = await withTimeout(
-      this.requestPrediction({
-        board: this.board,
-        player: current,
-        depth: 10,
-      }),
-      9000,
-      "predict timeout"
-    );
-
-    if (reqId !== this.predictionReqId) return;
-
-    const winner = this.normalizePredictionWinner(pred?.winner);
-    const moves =
-      Number.isInteger(pred?.moves) ? pred.moves :
-      Number.isInteger(pred?.mateIn) ? pred.mateIn :
-      null;
-    const score = typeof pred?.score === "number" ? pred.score : null;
-    const exact = !!pred?.exact;
-
-    let text = "Prédiction : ";
-
-    if (winner === this.RED || winner === this.YELLOW) {
-      const name = winner === this.RED ? "Rouge" : "Jaune";
-
-      if (moves !== null) {
-        text += exact
-          ? `${name} gagne dans ${moves} coup(s)`
-          : `${name} semble gagner dans environ ${moves} coup(s)`;
+    // ⚖️ CAS 2 : pas de gagnant → avantage
+    else {
+      if (data.score > 1000) {
+        text = "🟡 Jaune a l’avantage";
+      } else if (data.score < -1000) {
+        text = "🔴 Rouge a l’avantage";
       } else {
-        text += `avantage décisif pour ${name}`;
+        text = "⚖️ Position équilibrée";
       }
-    } else if (score !== null) {
-      if (score > 0) {
-        text += `Rouge a l'avantage (score ${Math.round(score)})`;
-      } else if (score < 0) {
-        text += `Jaune a l'avantage (score ${Math.round(score)})`;
-      } else {
-        text += "position équilibrée";
-      }
-    } else {
-      text += "position incertaine";
     }
 
-    // on affiche le meilleur coup seulement si on a un vrai résultat
-    if (bestCol !== null) {
-      text += ` — meilleur coup : colonne ${bestCol + 1}`;
-
-      if (bestWeight !== null) {
-        text += ` (poids ${Math.round(bestWeight)})`;
-      }
-
-      if (moveSource === "winning_move") {
-        text += " — coup gagnant";
-      } else if (moveSource === "blocking_move") {
-        text += " — coup défensif important";
-      }
+    // 💡 CONSEIL COUP
+    if (data.best_col !== null) {
+      text += ` | 💡 Meilleur coup : colonne ${data.best_col + 1}`;
     }
 
     this.setPredictionText(text);
 
   } catch (e) {
-    console.warn("prediction error:", e);
-
-    if (reqId !== this.predictionReqId) return;
-
-    // 4) fallback propre : pas de faux poids 0 / faux centre
-    if (bestCol !== null) {
-      let text = `Prédiction : analyse partielle — meilleur coup : colonne ${bestCol + 1}`;
-      if (bestWeight !== null) {
-        text += ` (poids ${Math.round(bestWeight)})`;
-      }
-      this.setPredictionText(text);
-    } else {
-      this.setPredictionText("Prédiction : indisponible");
-    }
+    this.setPredictionText("Prédiction : indisponible");
   }
 }
 findImmediateWinningMoveLocal(board, player) {

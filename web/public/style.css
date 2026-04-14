@@ -1473,3 +1473,16 @@ canvas#board {
   font-size: 13px;
   opacity: 0.9;
 }
+.footer-credit {
+  text-align: center;
+  padding: 14px;
+  font-size: 12px;
+  color: var(--ink-dim);
+  border-top: 1px solid var(--b1);
+  margin-top: 20px;
+  opacity: 0.8;
+}
+
+.footer-credit b {
+  color: var(--v300);
+}
