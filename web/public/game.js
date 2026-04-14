@@ -800,51 +800,14 @@ async updatePrediction() {
       }`;
     }
 
-  let lines = [];
+    const parts = [`Prédiction : ${positionType}`];
+    if (advantageText) parts.push(advantageText);
+    if (resultText) parts.push(resultText);
+    if (dangerText) parts.push(dangerText);
+    if (scoreText) parts.push(scoreText);
+    if (bestMoveText) parts.push(bestMoveText);
 
-// 🎯 TYPE GLOBAL
-if (positionType === "victoire potentielle") {
-  lines.push(`🏆 Victoire détectée`);
-} else if (positionType === "défaite potentielle") {
-  lines.push(`💀 Défaite probable`);
-} else if (positionType === "avantage") {
-  lines.push(`📈 Avantage`);
-} else if (positionType === "nul / équilibrée") {
-  lines.push(`⚖️ Position équilibrée`);
-} else {
-  lines.push(`❓ Position incertaine`);
-}
-
-// 🎮 AVANTAGE
-if (advantageText) {
-  lines.push(`🔵 ${advantageText}`);
-}
-
-// ⚡ RESULTAT
-if (resultText) {
-  lines.push(`⚡ ${resultText}`);
-}
-
-// ⚠️ DANGER
-if (dangerText) {
-  lines.push(`⚠️ ${dangerText}`);
-}
-
-// 🎯 MEILLEUR COUP
-if (bestMoveText) {
-  lines.push(`🎯 ${bestMoveText}`);
-}
-
-// 📊 SCORE
-if (scoreText) {
-  const sign = score > 0 ? "+" : "";
-  lines.push(`📊 Score : ${sign}${score}`);
-}
-
-// 🔥 RENDU MULTILIGNE
-this.el.predictionText.innerHTML = lines
-  .map(line => `<div class="prediction-line">${line}</div>`)
-  .join("");
+    this.setPredictionText(parts.join(" | "));
   } catch (e) {
     if (reqId !== this.predictionReqId) return;
     console.error("Erreur /predict :", e);
