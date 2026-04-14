@@ -414,29 +414,19 @@ class Connect4Web {
 
 async requestPrediction(payload) {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 7000);
+  const timeoutId = setTimeout(() => controller.abort(), 9000);
 
   try {
-    try {
-      const params = new URLSearchParams({
-        board: JSON.stringify(payload.board || []),
-        player: String(payload.player || "R"),
-        depth: String(payload.depth || 6),
-      });
+    const params = new URLSearchParams({
+      board: JSON.stringify(payload.board || []),
+      player: String(payload.player || "R"),
+      depth: String(payload.depth || 8),
+    });
 
-      return await this.apiFetch(`/predict?${params.toString()}`, {
-        method: "GET",
-        signal: controller.signal,
-      });
-    } catch (e1) {
-      console.warn("GET /predict échoué, tentative POST...", e1);
-
-      return await this.apiFetch("/predict", {
-        method: "POST",
-        body: JSON.stringify(payload),
-        signal: controller.signal,
-      });
-    }
+    return await this.apiFetch(`/predict?${params.toString()}`, {
+      method: "GET",
+      signal: controller.signal,
+    });
   } finally {
     clearTimeout(timeoutId);
   }
@@ -706,8 +696,6 @@ async updatePrediction() {
     return;
   }
 
-  this.setPredictionText("Prédiction : calcul...");
-
   const withTimeout = (promise, ms, label = "timeout") =>
     Promise.race([
       promise,
@@ -716,85 +704,101 @@ async updatePrediction() {
       ),
     ]);
 
+  const valids = this.validColumns(this.board);
+
+  const fallbackBestCol = (() => {
+    if (!valids.length) return null;
+    const center = Math.floor(this.cols / 2);
+    return valids.reduce((best, c) =>
+      Math.abs(c - center) < Math.abs(best - center) ? c : best
+    , valids[0]);
+  })();
+
+  let bestCol = fallbackBestCol;
+  let bestWeight = 0;
+  let moveSource = null;
+
+  // Étape 1 : affichage immédiat
+  if (bestCol !== null) {
+    this.setPredictionText(
+      `Prédiction : analyse... — meilleur coup : colonne ${bestCol + 1} (poids 0)`
+    );
+  } else {
+    this.setPredictionText("Prédiction : analyse...");
+  }
+
+  // Étape 2 : meilleur coup rapide
   try {
-    const depth = this.clampInt(this.el.depth?.value, 1, 8, 4) + 2;
+    const quickParams = new URLSearchParams({
+      board: JSON.stringify(this.board),
+      player: this.current,
+      ai_mode: "minimax",
+      depth: "4",
+    });
 
-    let pred = null;
-    let bestCol = null;
-    let bestWeight = null;
-    let moveSource = null;
-
-    // 1) prédiction globale
-    try {
-      pred = await withTimeout(
-        this.requestPrediction({
-          board: this.board,
-          player: this.current,
-          depth: Math.min(depth, 10),
-        }),
-        8000,
-        "predict timeout"
-      );
-    } catch (e) {
-      console.warn("prediction backend error:", e);
-      pred = null;
-    }
+    const moveData = await withTimeout(
+      this.apiFetch(`/ai/move?${quickParams.toString()}`, {
+        method: "GET",
+      }),
+      1800,
+      "ai move timeout"
+    );
 
     if (reqId !== this.predictionReqId) return;
 
-    // 2) meilleur coup : on le cherche TOUJOURS
-    try {
-      const params = new URLSearchParams({
-        board: JSON.stringify(this.board),
-        player: this.current,
-        ai_mode: "minimax",
-        depth: String(Math.min(depth, 8)),
-      });
+    const col =
+      Number.isInteger(moveData?.col) ? moveData.col :
+      Number.isInteger(moveData?.best_col) ? moveData.best_col :
+      null;
 
-      const moveData = await withTimeout(
-        this.apiFetch(`/ai/move?${params.toString()}`, {
-          method: "GET",
-        }),
-        5000,
-        "ai move timeout"
-      );
+    if (col !== null) bestCol = col;
+    moveSource = moveData?.source || null;
 
-      if (reqId !== this.predictionReqId) return;
+    const scores = moveData?.scores || {};
+    if (bestCol !== null && Object.prototype.hasOwnProperty.call(scores, bestCol)) {
+      const raw = Number(scores[bestCol]);
+      if (!Number.isNaN(raw)) bestWeight = raw;
+    }
 
-      bestCol =
-        Number.isInteger(moveData?.col) ? moveData.col :
-        Number.isInteger(moveData?.best_col) ? moveData.best_col :
-        null;
+    if (bestCol !== null) {
+      let quickText =
+        `Prédiction : analyse en cours — meilleur coup : colonne ${bestCol + 1} (poids ${Math.round(bestWeight)})`;
 
-      moveSource = moveData?.source || null;
-
-      const scores = moveData?.scores || {};
-      if (bestCol !== null && Object.prototype.hasOwnProperty.call(scores, bestCol)) {
-        bestWeight = scores[bestCol];
+      if (moveSource === "winning_move") {
+        quickText += " — coup gagnant";
+      } else if (moveSource === "blocking_move") {
+        quickText += " — coup défensif important";
       }
-    } catch (e) {
-      console.warn("best move error:", e);
-    }
 
-    let winner = undefined;
-    let moves = null;
-    let score = null;
-    let exact = false;
-
-    if (pred) {
-      winner = this.normalizePredictionWinner(pred?.winner);
-      moves =
-        Number.isInteger(pred?.moves) ? pred.moves :
-        Number.isInteger(pred?.mateIn) ? pred.mateIn :
-        null;
-      score = typeof pred?.score === "number" ? pred.score : null;
-      exact = !!pred?.exact;
-    } else if (typeof bestWeight === "number") {
-      score = bestWeight;
-      winner = null;
-      moves = null;
-      exact = false;
+      this.setPredictionText(quickText);
     }
+  } catch (e) {
+    console.warn("best move error:", e);
+  }
+
+  if (reqId !== this.predictionReqId) return;
+
+  // Étape 3 : prédiction plus profonde pour voir les gains lointains
+  try {
+    const pred = await withTimeout(
+      this.requestPrediction({
+        board: this.board,
+        player: this.current,
+        depth: 10,   // <- plus profond pour voir 8, 10, 12 coups...
+      }),
+      9000,
+      "predict timeout"
+    );
+
+    if (reqId !== this.predictionReqId) return;
+
+    const winner = this.normalizePredictionWinner(pred?.winner);
+    const moves =
+      Number.isInteger(pred?.moves) ? pred.moves :
+      Number.isInteger(pred?.mateIn) ? pred.mateIn :
+      null;
+    const score = typeof pred?.score === "number" ? pred.score : 0;
+    const exact = !!pred?.exact;
 
     let text = "Prédiction : ";
 
@@ -808,7 +812,7 @@ async updatePrediction() {
       } else {
         text += `avantage décisif pour ${name}`;
       }
-    } else if (typeof score === "number") {
+    } else {
       if (score > 0) {
         text += `Rouge a l'avantage (score ${Math.round(score)})`;
       } else if (score < 0) {
@@ -816,28 +820,17 @@ async updatePrediction() {
       } else {
         text += "position équilibrée (score 0)";
       }
-    } else {
-      text += "position incertaine";
     }
 
-    // 3) TOUJOURS afficher un meilleur coup
     if (bestCol === null) {
-      const valids = this.validColumns(this.board);
-      if (valids.length) {
-        const center = Math.floor(this.cols / 2);
-        bestCol = valids.reduce((best, c) =>
-          Math.abs(c - center) < Math.abs(best - center) ? c : best
-        , valids[0]);
-      }
+      bestCol = fallbackBestCol;
     }
-
     if (bestWeight === null || bestWeight === undefined) {
       bestWeight = 0;
     }
 
     if (bestCol !== null) {
-      text += ` — meilleur coup : colonne ${bestCol + 1}`;
-      text += ` (poids ${Math.round(bestWeight)})`;
+      text += ` — meilleur coup : colonne ${bestCol + 1} (poids ${Math.round(bestWeight)})`;
 
       if (moveSource === "winning_move") {
         text += " — coup gagnant";
@@ -846,26 +839,16 @@ async updatePrediction() {
       }
     }
 
-    if (reqId !== this.predictionReqId) return;
     this.setPredictionText(text);
 
   } catch (e) {
+    console.warn("deep prediction error:", e);
+
     if (reqId !== this.predictionReqId) return;
-    console.error("prediction error:", e);
-
-    const valids = this.validColumns(this.board);
-    let bestCol = null;
-
-    if (valids.length) {
-      const center = Math.floor(this.cols / 2);
-      bestCol = valids.reduce((best, c) =>
-        Math.abs(c - center) < Math.abs(best - center) ? c : best
-      , valids[0]);
-    }
 
     if (bestCol !== null) {
       this.setPredictionText(
-        `Prédiction : position incertaine — meilleur coup : colonne ${bestCol + 1} (poids 0)`
+        `Prédiction : position incertaine — meilleur coup : colonne ${bestCol + 1} (poids ${Math.round(bestWeight)})`
       );
     } else {
       this.setPredictionText("Prédiction : indisponible");
