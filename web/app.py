@@ -12,9 +12,17 @@
 # - fichiers statiques dans ./public
 
 import os
+import sys
 import json
 from datetime import datetime
 from typing import List, Optional, Any
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(BASE_DIR)
+PUBLIC_DIR = os.path.join(BASE_DIR, "public")
+
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -38,9 +46,6 @@ from ia_engine import (
     YELLOW,
     reload_model,
 )
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-PUBLIC_DIR = os.path.join(BASE_DIR, "public")
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
