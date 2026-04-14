@@ -688,39 +688,51 @@ async updatePrediction() {
     return;
   }
 
+  const reqId = ++this.predictionReqId;
+
   try {
-    const res = await fetch(
-      `/api/predict?board=${encodeURIComponent(JSON.stringify(this.board))}&player=${this.current}&depth=8`
-    );
+    const params = new URLSearchParams({
+      board: JSON.stringify(this.board),
+      player: this.current,
+      depth: "8",
+    });
 
-    if (!res.ok) throw new Error("API error");
+    const data = await this.apiFetch(`/predict?${params.toString()}`, {
+      method: "GET",
+    });
 
-    const data = await res.json();
+    if (reqId !== this.predictionReqId) return;
 
-    let parts = [];
+    const parts = [];
 
-    // 💡 1. Meilleur coup EN PREMIER
-    if (data.best_col !== null && data.best_col !== undefined) {
-      parts.push(`💡 Meilleur coup : colonne ${data.best_col + 1}`);
+    if (
+      data.best_col !== null &&
+      data.best_col !== undefined &&
+      Number.isInteger(Number(data.best_col))
+    ) {
+      parts.push(`💡 Meilleur coup : colonne ${Number(data.best_col) + 1}`);
     }
 
-    // 🔥 2. Qui gagne + en combien de coups
-    if (data.winner) {
+    if (data.winner === "R" || data.winner === "Y") {
       const color = data.winner === "R" ? "Rouge" : "Jaune";
-      const moves = data.mateIn ?? data.moves;
+      const n =
+        data.mateIn !== null && data.mateIn !== undefined
+          ? Number(data.mateIn)
+          : data.moves !== null && data.moves !== undefined
+          ? Number(data.moves)
+          : null;
 
-      if (moves !== null && moves !== undefined) {
-        parts.push(`🔥 ${color} gagne dans ${moves} coup(s)`);
+      if (n !== null && !Number.isNaN(n)) {
+        parts.push(`🔥 ${color} gagne dans ${n} coup(s)`);
       } else {
         parts.push(`🔥 ${color} a l'avantage`);
       }
-    }
+    } else {
+      const score = Number(data.score || 0);
 
-    // ⚖️ 3. Sinon avantage
-    else {
-      if (data.score > 1000) {
+      if (score > 1000) {
         parts.push("🟡 Jaune a l’avantage");
-      } else if (data.score < -1000) {
+      } else if (score < -1000) {
         parts.push("🔴 Rouge a l’avantage");
       } else {
         parts.push("⚖️ Position équilibrée");
@@ -729,10 +741,29 @@ async updatePrediction() {
 
     this.setPredictionText(parts.join(" | "));
   } catch (e) {
+    if (reqId !== this.predictionReqId) return;
     this.setPredictionText("Prédiction : indisponible");
   }
 }
+setPredictionText(text) {
+  if (!this.el.predictionText) return;
+  this._lastPredictionText = String(text || "");
+  this.el.predictionText.textContent = this._lastPredictionText;
+}
 
+resetPredictionDisplay() {
+  if (!this.el.predictionText) return;
+  this.predictionReqId++;
+  this._lastPredictionText = "Prédiction : ...";
+  this.setPredictionText("Prédiction : ...");
+}
+
+resetPredictionDisplay() {
+  if (!this.el.predictionText) return;
+  this.predictionReqId++;
+  this._lastPredictionText = "Prédiction : ...";
+  this.setPredictionText("Prédiction : ...");
+}
   async onlineRematchFlow() {
     if (!this.online.enabled || !this.online.code) return;
     if (this.online.rematchInFlight) return;
