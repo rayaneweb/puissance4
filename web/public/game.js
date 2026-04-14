@@ -412,12 +412,11 @@ class Connect4Web {
     return payload;
   }
 
-  async requestPrediction(payload) {
+async requestPrediction(payload) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 7000);
 
   try {
-    // 1) on tente GET d'abord (plus compatible avec ton backend Render)
     try {
       const params = new URLSearchParams({
         board: JSON.stringify(payload.board || []),
@@ -432,7 +431,6 @@ class Connect4Web {
     } catch (e1) {
       console.warn("GET /predict échoué, tentative POST...", e1);
 
-      // 2) fallback POST
       return await this.apiFetch("/predict", {
         method: "POST",
         body: JSON.stringify(payload),
@@ -710,17 +708,33 @@ async updatePrediction() {
 
   this.setPredictionText("Prédiction : calcul...");
 
+  const withTimeout = (promise, ms, label = "timeout") =>
+    Promise.race([
+      promise,
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error(label)), ms)
+      ),
+    ]);
+
   try {
     const depth = this.clampInt(this.el.depth?.value, 1, 8, 4) + 2;
 
-    // 1) prédiction globale
     let pred = null;
+    let bestCol = null;
+    let bestWeight = null;
+    let moveSource = null;
+
+    // 1) prédiction globale
     try {
-      pred = await this.requestPrediction({
-        board: this.board,
-        player: this.current,
-        depth: Math.min(depth, 10),
-      });
+      pred = await withTimeout(
+        this.requestPrediction({
+          board: this.board,
+          player: this.current,
+          depth: Math.min(depth, 10),
+        }),
+        8000,
+        "predict timeout"
+      );
     } catch (e) {
       console.warn("prediction backend error:", e);
       pred = null;
@@ -728,12 +742,7 @@ async updatePrediction() {
 
     if (reqId !== this.predictionReqId) return;
 
-    // 2) meilleur coup + poids
-    let bestCol = null;
-    let bestWeight = null;
-    let moveSource = null;
-    let moveScores = {};
-
+    // 2) meilleur coup : on le cherche TOUJOURS
     try {
       const params = new URLSearchParams({
         board: JSON.stringify(this.board),
@@ -742,9 +751,13 @@ async updatePrediction() {
         depth: String(Math.min(depth, 8)),
       });
 
-      const moveData = await this.apiFetch(`/ai/move?${params.toString()}`, {
-        method: "GET",
-      });
+      const moveData = await withTimeout(
+        this.apiFetch(`/ai/move?${params.toString()}`, {
+          method: "GET",
+        }),
+        5000,
+        "ai move timeout"
+      );
 
       if (reqId !== this.predictionReqId) return;
 
@@ -754,16 +767,15 @@ async updatePrediction() {
         null;
 
       moveSource = moveData?.source || null;
-      moveScores = moveData?.scores || {};
 
-      if (bestCol !== null && moveScores && Object.prototype.hasOwnProperty.call(moveScores, bestCol)) {
-        bestWeight = moveScores[bestCol];
+      const scores = moveData?.scores || {};
+      if (bestCol !== null && Object.prototype.hasOwnProperty.call(scores, bestCol)) {
+        bestWeight = scores[bestCol];
       }
     } catch (e) {
       console.warn("best move error:", e);
     }
 
-    // 3) si la prédiction backend a échoué, on fabrique au moins une prédiction locale simple
     let winner = undefined;
     let moves = null;
     let score = null;
@@ -786,7 +798,6 @@ async updatePrediction() {
 
     let text = "Prédiction : ";
 
-    // 4) texte principal
     if (winner === this.RED || winner === this.YELLOW) {
       const name = winner === this.RED ? "Rouge" : "Jaune";
 
@@ -798,35 +809,40 @@ async updatePrediction() {
         text += `avantage décisif pour ${name}`;
       }
     } else if (typeof score === "number") {
-      if (score > 900000) {
-        text += "Rouge a un avantage décisif";
-      } else if (score < -900000) {
-        text += "Jaune a un avantage décisif";
-      } else if (score > 0) {
+      if (score > 0) {
         text += `Rouge a l'avantage (score ${Math.round(score)})`;
       } else if (score < 0) {
         text += `Jaune a l'avantage (score ${Math.round(score)})`;
       } else {
-        text += "position équilibrée";
+        text += "position équilibrée (score 0)";
       }
     } else {
       text += "position incertaine";
     }
 
-    // 5) conseil pour humain
-    if (this.isHumanTurn(this.current) && !this.online.enabled && bestCol !== null) {
-      text += ` — meilleur coup conseillé : colonne ${bestCol + 1}`;
-
-      if (bestWeight !== null && bestWeight !== undefined) {
-        text += ` (poids ${Math.round(bestWeight)})`;
+    // 3) TOUJOURS afficher un meilleur coup
+    if (bestCol === null) {
+      const valids = this.validColumns(this.board);
+      if (valids.length) {
+        const center = Math.floor(this.cols / 2);
+        bestCol = valids.reduce((best, c) =>
+          Math.abs(c - center) < Math.abs(best - center) ? c : best
+        , valids[0]);
       }
+    }
 
-      if (moveSource) {
-        if (moveSource === "winning_move") {
-          text += " — coup gagnant";
-        } else if (moveSource === "blocking_move") {
-          text += " — coup défensif important";
-        }
+    if (bestWeight === null || bestWeight === undefined) {
+      bestWeight = 0;
+    }
+
+    if (bestCol !== null) {
+      text += ` — meilleur coup : colonne ${bestCol + 1}`;
+      text += ` (poids ${Math.round(bestWeight)})`;
+
+      if (moveSource === "winning_move") {
+        text += " — coup gagnant";
+      } else if (moveSource === "blocking_move") {
+        text += " — coup défensif important";
       }
     }
 
@@ -835,47 +851,25 @@ async updatePrediction() {
 
   } catch (e) {
     if (reqId !== this.predictionReqId) return;
-
     console.error("prediction error:", e);
 
-    // dernier fallback : meilleur coup seulement
-    try {
-      const params = new URLSearchParams({
-        board: JSON.stringify(this.board),
-        player: this.current,
-        ai_mode: "minimax",
-        depth: "6",
-      });
+    const valids = this.validColumns(this.board);
+    let bestCol = null;
 
-      const moveData = await this.apiFetch(`/ai/move?${params.toString()}`, {
-        method: "GET",
-      });
-
-      const bestCol =
-        Number.isInteger(moveData?.col) ? moveData.col :
-        Number.isInteger(moveData?.best_col) ? moveData.best_col :
-        null;
-
-      const scores = moveData?.scores || {};
-      const bestWeight =
-        bestCol !== null && Object.prototype.hasOwnProperty.call(scores, bestCol)
-          ? scores[bestCol]
-          : null;
-
-      if (bestCol !== null && this.isHumanTurn(this.current) && !this.online.enabled) {
-        let text = `Prédiction : analyse partielle`;
-        text += ` — meilleur coup conseillé : colonne ${bestCol + 1}`;
-        if (bestWeight !== null) {
-          text += ` (poids ${Math.round(bestWeight)})`;
-        }
-        this.setPredictionText(text);
-        return;
-      }
-    } catch (e2) {
-      console.warn("fallback best move failed:", e2);
+    if (valids.length) {
+      const center = Math.floor(this.cols / 2);
+      bestCol = valids.reduce((best, c) =>
+        Math.abs(c - center) < Math.abs(best - center) ? c : best
+      , valids[0]);
     }
 
-    this.setPredictionText("Prédiction : indisponible");
+    if (bestCol !== null) {
+      this.setPredictionText(
+        `Prédiction : position incertaine — meilleur coup : colonne ${bestCol + 1} (poids 0)`
+      );
+    } else {
+      this.setPredictionText("Prédiction : indisponible");
+    }
   }
 }
 resetPredictionDisplay() {
@@ -1888,10 +1882,10 @@ async onlinePlay(col) {
   }
 
   setPredictionText(text) {
-    if (!this.el.predictionText) return;
-    this._lastPredictionText = String(text || "");
-    this.el.predictionText.textContent = this._lastPredictionText;
-  }
+  if (!this.el.predictionText) return;
+  this._lastPredictionText = String(text || "");
+  this.el.predictionText.textContent = this._lastPredictionText;
+}
 
   // ===== AI SCORES
   setScoresBlank() {
