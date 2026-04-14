@@ -1186,6 +1186,23 @@ def predict_outcome(
     }
 
 
+@app.post("/api/predict")
+    def api_predict(req: PredictReq):
+    player = req.player if req.player in (RED, YELLOW) else RED
+    depth = max(1, min(12, req.depth))
+
+    pred = predict_outcome(req.board, player, depth=depth)
+
+    return {
+        "winner": pred.get("winner"),
+        "moves": pred.get("moves"),
+        "score": pred.get("score"),
+        "best_col": pred.get("best_col"),
+        "depth_reached": pred.get("depth_reached"),
+        "source": pred.get("source"),
+        "player": player,
+        "depth": depth,
+    }
 # ══════════════════════════════════════════════════════════════
 # HYBRID
 # ══════════════════════════════════════════════════════════════

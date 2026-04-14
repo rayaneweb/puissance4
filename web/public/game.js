@@ -555,88 +555,84 @@ class Connect4Web {
   }
 
   async updatePrediction() {
-    if (!this.el.predictionText) return;
+  if (!this.el.predictionText) return;
 
-    if (!this.board) {
-      this.setPredictionText("Prédiction : ...");
-      return;
-    }
-
-    if (this.gameOver) {
-      if (this.winner === this.RED) {
-        this.setPredictionText("Prédiction : Rouge a gagné");
-      } else if (this.winner === this.YELLOW) {
-        this.setPredictionText("Prédiction : Jaune a gagné");
-      } else {
-        this.setPredictionText("Prédiction : Match nul");
-      }
-      return;
-    }
-
-    const reqId = ++this.predictionReqId;
-
-    try {
-      const depth = this.clampInt(this.el.depth?.value, 1, 8, 4);
-
-      const data = await this.apiFetch("/predict", {
-        method: "POST",
-        body: JSON.stringify({
-          board: this.board,
-          player: this.current,
-          depth,
-        }),
-      });
-
-      if (reqId !== this.predictionReqId) return;
-
-      const winner = data?.winner;
-      const moves =
-        Number.isInteger(data?.moves) ? data.moves : parseInt(data?.moves, 10);
-      const score =
-        typeof data?.score === "number"
-          ? Math.trunc(data.score)
-          : parseInt(data?.score, 10);
-
-      if (winner === this.RED || winner === "R") {
-        if (Number.isInteger(moves) && moves >= 0) {
-          this.setPredictionText(
-            `Prédiction : Rouge gagne dans ${moves} coup(s)${Number.isFinite(score) ? ` (score ${score})` : ""}`
-          );
-        } else {
-          this.setPredictionText(
-            `Prédiction : Rouge va gagner${Number.isFinite(score) ? ` (score ${score})` : ""}`
-          );
-        }
-        return;
-      }
-
-      if (winner === this.YELLOW || winner === "Y") {
-        if (Number.isInteger(moves) && moves >= 0) {
-          this.setPredictionText(
-            `Prédiction : Jaune gagne dans ${moves} coup(s)${Number.isFinite(score) ? ` (score ${score})` : ""}`
-          );
-        } else {
-          this.setPredictionText(
-            `Prédiction : Jaune va gagner${Number.isFinite(score) ? ` (score ${score})` : ""}`
-          );
-        }
-        return;
-      }
-
-      if (winner === null) {
-        this.setPredictionText(
-          `Prédiction : position équilibrée${Number.isFinite(score) ? ` (score ${score})` : ""}`
-        );
-        return;
-      }
-
-      this.setPredictionText("Prédiction : position incertaine");
-    } catch (e) {
-      if (reqId !== this.predictionReqId) return;
-      console.error("Erreur /predict :", e);
-      this.setPredictionText(`Prédiction : erreur (${e?.message || e})`);
-    }
+  if (!this.board) {
+    this.setPredictionText("Prédiction : ...");
+    return;
   }
+
+  if (this.gameOver) {
+    if (this.winner === this.RED) {
+      this.setPredictionText("Prédiction : Rouge a gagné");
+    } else if (this.winner === this.YELLOW) {
+      this.setPredictionText("Prédiction : Jaune a gagné");
+    } else {
+      this.setPredictionText("Prédiction : Match nul");
+    }
+    return;
+  }
+
+  const reqId = ++this.predictionReqId;
+
+  try {
+    const depth = this.clampInt(this.el.depth?.value, 1, 12, 4);
+
+    const data = await this.apiFetch("/predict", {
+      method: "POST",
+      body: JSON.stringify({
+        board: this.board,
+        player: this.current,
+        depth,
+      }),
+    });
+
+    if (reqId !== this.predictionReqId) return;
+
+    const winner = this.normalizePredictionWinner(data?.winner);
+    const moves = Number.isInteger(data?.moves) ? data.moves : parseInt(data?.moves, 10);
+    const score = typeof data?.score === "number" ? Math.trunc(data.score) : parseInt(data?.score, 10);
+
+    if (winner === this.RED) {
+      if (Number.isInteger(moves) && moves >= 0) {
+        this.setPredictionText(
+          `Prédiction : Rouge gagne dans ${moves} coup(s)${Number.isFinite(score) ? ` (score ${score})` : ""}`
+        );
+      } else {
+        this.setPredictionText(
+          `Prédiction : Rouge va gagner${Number.isFinite(score) ? ` (score ${score})` : ""}`
+        );
+      }
+      return;
+    }
+
+    if (winner === this.YELLOW) {
+      if (Number.isInteger(moves) && moves >= 0) {
+        this.setPredictionText(
+          `Prédiction : Jaune gagne dans ${moves} coup(s)${Number.isFinite(score) ? ` (score ${score})` : ""}`
+        );
+      } else {
+        this.setPredictionText(
+          `Prédiction : Jaune va gagner${Number.isFinite(score) ? ` (score ${score})` : ""}`
+        );
+      }
+      return;
+    }
+
+    if (winner === null) {
+      this.setPredictionText(
+        `Prédiction : position équilibrée${Number.isFinite(score) ? ` (score ${score})` : ""}`
+      );
+      return;
+    }
+
+    this.setPredictionText("Prédiction : position incertaine");
+  } catch (e) {
+    if (reqId !== this.predictionReqId) return;
+    console.error("Erreur /predict :", e);
+    this.setPredictionText(`Prédiction : erreur (${e?.message || e})`);
+  }
+}
 
   async onlineJoinFlow(codeRaw) {
     if (this.online.joinInFlight) return;
