@@ -25,11 +25,17 @@ import psycopg2
 import psycopg2.extras
 
 from ia_engine import (
+    best_move,
+    predict_outcome,
+    check_win_cells,
+    valid_columns,
+    drop_in_grid,
+    copy_grid,
+    is_draw,
+    other,
     EMPTY,
     RED,
     YELLOW,
-    best_move,
-    predict_outcome,
     reload_model,
 )
 
