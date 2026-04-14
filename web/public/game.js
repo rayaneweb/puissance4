@@ -4,13 +4,12 @@ class Connect4Web {
   YELLOW = "Y";
   CONNECT_N = 4;
 
-  COLOR_BG = "#170c38";
-  COLOR_HOLE = "#ede5ff";
-  COLOR_RED = "#e53030";
-  COLOR_YELLOW = "#f59e0b";
-  COLOR_WIN = "#22c55e";
-  COLOR_HOVER_COL = "rgba(124,82,232,0.18)";
-
+COLOR_BG = "#2f1252";
+COLOR_HOLE = "#fef3c7";
+COLOR_RED = "#ff4d6d";
+COLOR_YELLOW = "#facc15";
+COLOR_WIN = "#22c55e";
+COLOR_HOVER_COL = "rgba(250,204,21,0.16)";
   LS_NAME_R = "c4_name_red";
   LS_NAME_Y = "c4_name_yellow";
   LS_HISTORY = "c4_history";
