@@ -407,24 +407,23 @@ class Connect4Web {
     return payload;
   }
 
-  async requestAiMove(payload) {
-    const useGet = this.runtime?.env === "production";
+  async requestPrediction(payload) {
+  const useGet = this.runtime?.env === "production";
 
-    if (useGet) {
-      const params = new URLSearchParams({
-        board: JSON.stringify(payload.board || []),
-        player: String(payload.player || "R"),
-        ai_mode: String(payload.ai_mode || "minimax"),
-        depth: String(payload.depth || 4),
-      });
-      return this.apiFetch(`/ai/move?${params.toString()}`, { method: "GET" });
-    }
-
-    return this.apiFetch("/ai/move", {
-      method: "POST",
-      body: JSON.stringify(payload),
+  if (useGet) {
+    const params = new URLSearchParams({
+      board: JSON.stringify(payload.board || []),
+      player: String(payload.player || "R"),
+      depth: String(payload.depth || 4),
     });
+    return this.apiFetch(`/predict?${params.toString()}`, { method: "GET" });
   }
+
+  return this.apiFetch("/predict", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
 
   cleanJoinUrl() {
     try {
@@ -687,13 +686,10 @@ async updatePrediction() {
   try {
     const depth = this.clampInt(this.el.depth?.value, 1, 12, 4);
 
-    const data = await this.apiFetch("/predict", {
-      method: "POST",
-      body: JSON.stringify({
-        board: this.board,
-        player: this.current,
-        depth,
-      }),
+    const data = await this.requestPrediction({
+      board: this.board,
+      player: this.current,
+      depth,
     });
 
     if (reqId !== this.predictionReqId) return;
@@ -701,18 +697,17 @@ async updatePrediction() {
     const winner = this.normalizePredictionWinner(data?.winner);
     const exact = !!data?.exact;
 
-    const moves =
-      Number.isInteger(data?.moves) ? data.moves : parseInt(data?.moves, 10);
+    const moves = Number.isInteger(data?.moves)
+      ? data.moves
+      : parseInt(data?.moves, 10);
 
-    const score =
-      typeof data?.score === "number"
-        ? Math.trunc(data.score)
-        : parseInt(data?.score, 10);
+    const score = typeof data?.score === "number"
+      ? Math.trunc(data.score)
+      : parseInt(data?.score, 10);
 
-    const bestCol =
-      Number.isInteger(data?.best_col)
-        ? data.best_col
-        : parseInt(data?.best_col, 10);
+    const bestCol = Number.isInteger(data?.best_col)
+      ? data.best_col
+      : parseInt(data?.best_col, 10);
 
     const currentName = this.current === this.RED ? "Rouge" : "Jaune";
     const opponent = this.other(this.current);
@@ -722,7 +717,6 @@ async updatePrediction() {
 
     let advantagedPlayer = null;
     if (scoreIsFinite) {
-      // Dans le backend, le score est du point de vue de "player" = this.current
       if (score > 0) advantagedPlayer = this.current;
       else if (score < 0) advantagedPlayer = opponent;
     }
@@ -734,7 +728,6 @@ async updatePrediction() {
     let bestMoveText = "";
     let scoreText = scoreIsFinite ? `score ${score}` : "";
 
-    // 1) Cas victoire / défaite exactes
     if (winner === this.current && exact) {
       positionType = "victoire potentielle";
       resultText = Number.isInteger(moves) && moves >= 0
@@ -747,9 +740,7 @@ async updatePrediction() {
         ? `${opponentName} gagne dans ${moves} coup(s)`
         : `${opponentName} a une victoire forcée`;
       dangerText = `${currentName} est en difficulté`;
-    }
-    // 2) Cas avantage probable
-    else if (winner === this.current && !exact) {
+    } else if (winner === this.current && !exact) {
       positionType = "avantage";
       resultText = Number.isInteger(moves) && moves >= 0
         ? `${currentName} devrait gagner dans environ ${moves} coup(s)`
@@ -761,9 +752,7 @@ async updatePrediction() {
         ? `${opponentName} devrait gagner dans environ ${moves} coup(s)`
         : `${opponentName} a une meilleure position`;
       dangerText = `${currentName} est sous pression`;
-    }
-    // 3) Pas de gagnant annoncé → on se base sur le score
-    else if (winner === null) {
+    } else if (winner === null) {
       if (scoreIsFinite) {
         if (score >= 350) {
           positionType = "avantage";
@@ -805,7 +794,6 @@ async updatePrediction() {
     }
 
     const parts = [`Prédiction : ${positionType}`];
-
     if (advantageText) parts.push(advantageText);
     if (resultText) parts.push(resultText);
     if (dangerText) parts.push(dangerText);

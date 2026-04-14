@@ -249,16 +249,24 @@ def api_ai_move(payload: AIMoveRequest):
         )
 
 
-@app.post("/api/predict")
-def api_predict(payload: PredictRequest):
-    validate_board(payload.board)
+@app.get("/api/predict")
+def api_predict_get(board: str, player: str, depth: int = 4):
+    try:
+        parsed_board = json.loads(board)
+    except Exception:
+        raise HTTPException(status_code=400, detail="board invalide")
 
-    depth = max(1, min(int(payload.depth), 12))
+    validate_board(parsed_board)
+
+    if player not in ("R", "Y"):
+        raise HTTPException(status_code=400, detail="player invalide")
+
+    depth = max(1, min(int(depth), 12))
 
     try:
         result = predict_outcome(
-            board=payload.board,
-            player=payload.player,
+            board=parsed_board,
+            player=player,
             depth=depth,
             time_limit_ms=1800,
         )
@@ -274,9 +282,7 @@ def api_predict(payload: PredictRequest):
             "exact": bool(result.get("exact", False)),
         }
     except Exception as e:
-        print(f"[app] /api/predict error: {e}")
-        # Très important : on renvoie 200 avec un objet propre
-        # pour éviter le HTTP 502 dans le front.
+        print(f"[app] /api/predict GET error: {e}")
         return {
             "winner": None,
             "moves": None,
@@ -287,6 +293,17 @@ def api_predict(payload: PredictRequest):
             "source": f"error:{type(e).__name__}",
             "exact": False,
         }
+
+
+@app.get("/api/config")
+def api_config():
+    env = "production" if DATABASE_URL else "local"
+    storage = "postgres" if DATABASE_URL else "indexeddb"
+    return {
+        "env": env,
+        "storage": storage,
+        "has_database": bool(DATABASE_URL),
+    }
 
 
 @app.post("/api/ai/reload")
