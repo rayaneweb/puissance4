@@ -590,9 +590,12 @@ class Connect4Web {
     if (reqId !== this.predictionReqId) return;
 
     const winner = this.normalizePredictionWinner(data?.winner);
-    const moves = Number.isInteger(data?.moves) ? data.moves : parseInt(data?.moves, 10);
+    const moves =
+      Number.isInteger(data?.moves) ? data.moves : parseInt(data?.moves, 10);
     const score =
-      typeof data?.score === "number" ? Math.trunc(data.score) : parseInt(data?.score, 10);
+      typeof data?.score === "number"
+        ? Math.trunc(data.score)
+        : parseInt(data?.score, 10);
 
     if (winner === this.RED) {
       if (Number.isInteger(moves) && moves >= 0) {
@@ -650,7 +653,9 @@ class Connect4Web {
             } (score ${score})`
           );
         } else {
-          this.setPredictionText(`Prédiction : position équilibrée (score ${score})`);
+          this.setPredictionText(
+            `Prédiction : position équilibrée (score ${score})`
+          );
         }
       } else {
         this.setPredictionText("Prédiction : position incertaine");
@@ -665,55 +670,6 @@ class Connect4Web {
     this.setPredictionText(`Prédiction : erreur (${e?.message || e})`);
   }
 }
-
-  async onlineJoinFlow(codeRaw) {
-    if (this.online.joinInFlight) return;
-    this.online.joinInFlight = true;
-    if (this.el.onlineJoin) this.el.onlineJoin.disabled = true;
-
-    try {
-      const code = (codeRaw || "").trim().toUpperCase();
-      if (!code) throw new Error("Code manquant.");
-
-      if (this.online.enabled && this.online.code === code) {
-        this.cleanJoinUrl();
-        return;
-      }
-
-      const name = this.getOnlineName();
-      const out = await this.apiFetch("/online/join", {
-        method: "POST",
-        body: JSON.stringify({
-          code,
-          player_name: name,
-        }),
-      });
-
-      this.onlineSaveSession(out.code, out.player_secret, out.your_token);
-      if (this.el.onlineCode) this.el.onlineCode.value = out.code;
-
-      this.online.autoSavedFinishedGame = false;
-      this.setOnlineEnabled(true);
-      this.setOnlineBadge(`Online #${out.code} (${out.your_token})`);
-
-      this.resetLocalBoardOnly();
-      this.onlineStartPolling();
-      this.cleanJoinUrl();
-    } finally {
-      this.online.joinInFlight = false;
-      if (this.el.onlineJoin) this.el.onlineJoin.disabled = false;
-    }
-  }
-
-  onlineLeaveFlow() {
-    this.onlineStopPolling();
-    this.setOnlineEnabled(false);
-    this.onlineClearSession();
-    this.setOnlineBadge("Offline");
-    this.updateSpectatorsInfo(0);
-    this.paintMode = false;
-    this.updatePaintUI();
-  }
 
   async onlinePlay(col) {
     if (!this.online.enabled || !this.online.code || !this.online.token) return;

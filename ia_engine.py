@@ -1131,8 +1131,8 @@ def predict_outcome(
                 "source": "opponent_winning_move",
             }
 
-    # Si peu de coups restants → calcul beaucoup plus profond
-    remaining = len(valid_columns(board)) * len(board)
+    remaining = sum(1 for row in board for cell in row if cell == EMPTY)
+
     if remaining <= 20:
         result = _iterative_search(
             board=copy_grid(board),
