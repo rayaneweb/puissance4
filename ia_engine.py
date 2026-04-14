@@ -1,12 +1,13 @@
 # ia_engine.py — Moteur IA Puissance 4
 # Partagé entre game.py (desktop) et app.py (web)
-# Modes : random / trained / minimax / hybrid
+# Modes : random / trained / minimax / hybrid / lose
 # Version renforcée :
 # - iterative deepening
 # - time control
 # - transposition table
 # - move ordering
 # - prédiction améliorée (gagnant + nombre de coups estimé)
+# - meilleur coup plus fiable
 
 import random
 import os
@@ -1098,12 +1099,12 @@ def _ply_to_moves(ply):
 def _prediction_limits(board: list, depth: int, time_limit_ms: int) -> tuple[int, int]:
     remaining = sum(1 for row in board for cell in row if cell == EMPTY)
 
-    if remaining <= 10:
-        return 42, max(time_limit_ms, 10000)
-    if remaining <= 16:
-        return max(depth, 20), max(time_limit_ms, 6000)
-    if remaining <= 24:
-        return max(depth, 14), max(time_limit_ms, 3000)
+    if remaining <= 12:
+        return 42, max(time_limit_ms, 8000)
+    if remaining <= 20:
+        return max(depth, 20), max(time_limit_ms, 5000)
+    if remaining <= 30:
+        return max(depth, 14), max(time_limit_ms, 2500)
 
     return max(1, min(depth, 16)), max(500, time_limit_ms)
 
@@ -1145,67 +1146,56 @@ def predict_outcome(
                 "score": 0,
                 "depth_reached": 0,
                 "best_col": None,
+                "best_moves": [],
                 "source": "terminal",
+                "exact": True,
+            }
+
+        cols = valid_columns(board)
+        if not cols:
+            return {
+                "winner": None,
+                "mateIn": None,
+                "moves": None,
+                "score": 0,
+                "depth_reached": 0,
+                "best_col": None,
+                "best_moves": [],
+                "source": "no_moves",
                 "exact": True,
             }
 
         opp = other(player)
 
-        def _winner_from_score(s: int) -> Optional[str]:
-            if s > 900_000:
-                return player
-            if s < -900_000:
-                return opp
-            return None
-
-        def _exact_payload(
-            s: int,
-            d,
-            best_col,
-            source_name: str,
-            depth_val: int,
-        ) -> Optional[dict]:
-            w = _winner_from_score(int(s))
-            if w is None:
-                return None
-            mate = d if d is not None else 1
-            return {
-                "winner": w,
-                "mateIn": mate,
-                "moves": _ply_to_moves(mate),
-                "score": int(s),
-                "depth_reached": int(depth_val),
-                "best_col": best_col,
-                "source": source_name,
-                "exact": True,
-            }
-
-        immediate = _find_immediate_winning_move(board, player)
-        if immediate is not None:
+        immediate_wins = _find_all_immediate_wins(copy_grid(board), player)
+        if immediate_wins:
+            best_col = immediate_wins[0]
             return {
                 "winner": player,
                 "mateIn": 1,
                 "moves": 1,
                 "score": WIN_SCORE - 1,
                 "depth_reached": 1,
-                "best_col": immediate,
+                "best_col": best_col,
+                "best_moves": immediate_wins,
                 "source": "winning_move",
                 "exact": True,
             }
 
-        opp_immediate = _find_immediate_winning_move(board, opp)
-        if opp_immediate is not None:
-            safe = _safe_columns(board, player)
-            if not safe:
+        opp_immediate_wins = _find_all_immediate_wins(copy_grid(board), opp)
+        if opp_immediate_wins:
+            blocking_moves = [c for c in cols if c in opp_immediate_wins]
+            if blocking_moves:
                 return {
-                    "winner": opp,
-                    "mateIn": 1,
-                    "moves": 1,
-                    "score": -WIN_SCORE + 1,
+                    "winner": None,
+                    "mateIn": None,
+                    "moves": None,
+                    "score": 50000,
                     "depth_reached": 1,
-                    "best_col": None,
-                    "source": "opponent_winning_move",
-                    "exact": True,
+                    "best_col": blocking_moves[0],
+                    "best_moves": blocking_moves,
+                    "source": "blocking_move",
+                    "exact": False,
                 }
 
         safe_depth, safe_time = _prediction_limits(board, depth, time_limit_ms)
@@ -1221,71 +1211,64 @@ def predict_outcome(
         scores = result.get("scores", {}) or {}
         distances = result.get("distances", {}) or {}
         source = result.get("source", "iterative")
-        score = int(scores.get(col, 0)) if col is not None else 0
-        dist = distances.get(col)
         depth_reached = int(result.get("depth_reached", 0))
 
-        if source == "blocking_move" and col is not None:
-            next_board = copy_grid(board)
-            pos = drop_in_grid(next_board, col, player)
+        if col is None:
+            fallback = _order_columns_center_first(cols, len(board[0]))[0]
+            return {
+                "winner": None,
+                "mateIn": None,
+                "moves": None,
+                "score": 0,
+                "depth_reached": depth_reached,
+                "best_col": fallback,
+                "best_moves": [fallback],
+                "source": "fallback",
+                "exact": False,
+            }
 
-            if pos is not None:
-                if check_win_cells(next_board, pos[0], pos[1], player):
-                    return {
-                        "winner": player,
-                        "mateIn": 1,
-                        "moves": 1,
-                        "score": WIN_SCORE - 1,
-                        "depth_reached": 1,
-                        "best_col": col,
-                        "source": "blocking_move_win",
-                        "exact": True,
-                    }
+        score = int(scores.get(col, 0))
+        dist = distances.get(col)
 
-                follow_depth = min(42, max(safe_depth + 3, 10))
-                follow_time = min(12000, max(safe_time + 1500, 3500))
+        best_moves = [c for c, s in scores.items() if s == score]
+        if not best_moves:
+            best_moves = [col]
 
-                follow = _iterative_search(
-                    board=copy_grid(next_board),
-                    player=opp,
-                    depth=follow_depth,
-                    time_limit_ms=follow_time,
-                )
+        center = len(board[0]) // 2
+        best_moves = sorted(set(best_moves), key=lambda c: (abs(c - center), c))
+        best_col = best_moves[0]
 
-                follow_col = follow.get("col")
-                follow_scores = follow.get("scores", {}) or {}
-                follow_distances = follow.get("distances", {}) or {}
-                follow_source = follow.get("source", "iterative_after_block")
-                follow_score = (
-                    int(follow_scores.get(follow_col, 0))
-                    if follow_col is not None
-                    else 0
-                )
-                follow_dist = follow_distances.get(follow_col)
-                follow_depth_reached = int(follow.get("depth_reached", 0))
+        predicted_winner = None
+        exact = False
 
-                # On remet le score du point de vue de "player"
-                score = -follow_score
-                dist = None if follow_dist is None else follow_dist + 1
-                depth_reached = max(depth_reached, follow_depth_reached + 1)
-                source = f"blocking_then_{follow_source}"
+        if score >= WIN_SCORE - safe_depth - 2:
+            predicted_winner = player
+            exact = True
+        elif score <= -(WIN_SCORE - safe_depth - 2):
+            predicted_winner = opp
+            exact = True
+        else:
+            if score >= 350:
+                predicted_winner = player
+            elif score <= -350:
+                predicted_winner = opp
 
-                exact_after_block = _exact_payload(
-                    score, dist, col, source, depth_reached
-                )
-                if exact_after_block is not None:
-                    return exact_after_block
+        estimated_ply = None
+        if dist is not None:
+            estimated_ply = dist
+        elif predicted_winner is not None:
+            if abs(score) >= 7000:
+                estimated_ply = 3
+            elif abs(score) >= 3500:
+                estimated_ply = 5
+            elif abs(score) >= 1500:
+                estimated_ply = 7
+            else:
+                estimated_ply = max(8, 18 - depth_reached)
 
-        exact_now = _exact_payload(score, dist, col, source, depth_reached)
-        if exact_now is not None:
-            return exact_now
-
-        strong_eval = abs(score) >= 800
-        tactical = _is_tactical_position(board, player)
-
-        if (dist is None) and (strong_eval or tactical):
-            verify_depth = min(42, max(safe_depth + 5, 12))
-            verify_time = min(15000, max(safe_time + 2500, 5000))
+        if not exact and _is_tactical_position(board, player):
+            verify_depth = min(42, max(safe_depth + 4, 12))
+            verify_time = min(12000, max(safe_time + 1500, 3500))
 
             verify = _iterative_search(
                 board=copy_grid(board),
@@ -1297,78 +1280,90 @@ def predict_outcome(
             vcol = verify.get("col")
             vscores = verify.get("scores", {}) or {}
             vdistances = verify.get("distances", {}) or {}
-            vsource = verify.get("source", "verify_search")
-            vscore = int(vscores.get(vcol, 0)) if vcol is not None else score
-            vdist = vdistances.get(vcol)
             vdepth = int(verify.get("depth_reached", depth_reached))
+            if vcol is not None:
+                vscore = int(vscores.get(vcol, score))
+                vdist = vdistances.get(vcol)
 
-            if abs(vscore) >= abs(score) or vdist is not None or vdepth > depth_reached:
-                col = vcol
-                score = vscore
-                dist = vdist
-                depth_reached = vdepth
-                source = f"verify_{vsource}"
+                vbest_moves = [c for c, s in vscores.items() if s == vscore]
+                if not vbest_moves:
+                    vbest_moves = [vcol]
+                vbest_moves = sorted(
+                    set(vbest_moves), key=lambda c: (abs(c - center), c)
+                )
 
-        exact_verified = _exact_payload(score, dist, col, source, depth_reached)
-        if exact_verified is not None:
-            return exact_verified
+                if (
+                    abs(vscore) >= abs(score)
+                    or vdist is not None
+                    or vdepth > depth_reached
+                ):
+                    best_col = vbest_moves[0]
+                    best_moves = vbest_moves
+                    score = vscore
+                    dist = vdist
+                    depth_reached = vdepth
+                    source = f"verify_{verify.get('source', 'iterative')}"
 
-        likely_winner = None
-        estimated_ply = None
+                    if score >= WIN_SCORE - verify_depth - 2:
+                        predicted_winner = player
+                        exact = True
+                    elif score <= -(WIN_SCORE - verify_depth - 2):
+                        predicted_winner = opp
+                        exact = True
+                    else:
+                        exact = False
+                        if score >= 350:
+                            predicted_winner = player
+                        elif score <= -350:
+                            predicted_winner = opp
+                        else:
+                            predicted_winner = None
 
-        if score >= 350:
-            likely_winner = player
-        elif score <= -350:
-            likely_winner = opp
-
-        if dist is not None:
-            estimated_ply = dist
-        elif likely_winner is not None:
-            if abs(score) >= 7000:
-                estimated_ply = 3
-            elif abs(score) >= 3500:
-                estimated_ply = 5
-            elif abs(score) >= 1500:
-                estimated_ply = 7
-            else:
-                estimated_ply = max(8, 18 - depth_reached)
+                    if dist is not None:
+                        estimated_ply = dist
+                    elif predicted_winner is not None:
+                        if abs(score) >= 7000:
+                            estimated_ply = 3
+                        elif abs(score) >= 3500:
+                            estimated_ply = 5
+                        elif abs(score) >= 1500:
+                            estimated_ply = 7
+                        else:
+                            estimated_ply = max(8, 18 - depth_reached)
+                    else:
+                        estimated_ply = None
 
         return {
-            "winner": likely_winner,
+            "winner": predicted_winner,
             "mateIn": estimated_ply,
             "moves": _ply_to_moves(estimated_ply),
             "score": score,
             "depth_reached": depth_reached,
-            "best_col": col,
+            "best_col": best_col,
+            "best_moves": best_moves,
             "source": source,
-            "exact": False,
+            "exact": exact,
         }
 
     except Exception as e:
         print(f"[ia_engine] predict_outcome error: {e}")
+        cols = valid_columns(board) if board else []
+        fallback = None
+        if cols and board and board[0]:
+            center = len(board[0]) // 2
+            fallback = sorted(cols, key=lambda c: (abs(c - center), c))[0]
+
         return {
             "winner": None,
             "mateIn": None,
             "moves": None,
             "score": 0,
             "depth_reached": 0,
-            "best_col": None,
+            "best_col": fallback,
+            "best_moves": [fallback] if fallback is not None else [],
             "source": f"predict_error:{type(e).__name__}",
             "exact": False,
         }
-
-
-def _prediction_limits(board: list, depth: int, time_limit_ms: int) -> tuple[int, int]:
-    remaining = sum(1 for row in board for cell in row if cell == EMPTY)
-
-    if remaining <= 12:
-        return 42, max(time_limit_ms, 8000)
-    if remaining <= 20:
-        return max(depth, 20), max(time_limit_ms, 5000)
-    if remaining <= 30:
-        return max(depth, 14), max(time_limit_ms, 2500)
-
-    return max(1, min(depth, 16)), max(200, time_limit_ms)
 
 
 # ══════════════════════════════════════════════════════════════
