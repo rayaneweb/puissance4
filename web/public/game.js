@@ -677,93 +677,61 @@ async updatePrediction() {
     return;
   }
 
+  if (this.gameOver) {
+    if (this.winner === this.RED) {
+      this.setPredictionText("Partie terminée : Rouge a gagné");
+    } else if (this.winner === this.YELLOW) {
+      this.setPredictionText("Partie terminée : Jaune a gagné");
+    } else {
+      this.setPredictionText("Partie terminée : match nul");
+    }
+    return;
+  }
+
   try {
     const res = await fetch(
-      `/api/predict?board=${encodeURIComponent(JSON.stringify(this.board))}&player=${this.currentPlayer}&depth=6`
+      `/api/predict?board=${encodeURIComponent(JSON.stringify(this.board))}&player=${this.current}&depth=8`
     );
 
     if (!res.ok) throw new Error("API error");
 
     const data = await res.json();
 
-    let text = "";
+    let parts = [];
 
-    // 🎯 CAS 1 : victoire détectée
+    // 💡 1. Meilleur coup EN PREMIER
+    if (data.best_col !== null && data.best_col !== undefined) {
+      parts.push(`💡 Meilleur coup : colonne ${data.best_col + 1}`);
+    }
+
+    // 🔥 2. Qui gagne + en combien de coups
     if (data.winner) {
       const color = data.winner === "R" ? "Rouge" : "Jaune";
+      const moves = data.mateIn ?? data.moves;
 
-      if (data.moves !== null) {
-        text = `🔥 ${color} gagne dans ${data.moves} coup(s)`;
+      if (moves !== null && moves !== undefined) {
+        parts.push(`🔥 ${color} gagne dans ${moves} coup(s)`);
       } else {
-        text = `🔥 ${color} a l'avantage`;
+        parts.push(`🔥 ${color} a l'avantage`);
       }
     }
 
-    // ⚖️ CAS 2 : pas de gagnant → avantage
+    // ⚖️ 3. Sinon avantage
     else {
       if (data.score > 1000) {
-        text = "🟡 Jaune a l’avantage";
+        parts.push("🟡 Jaune a l’avantage");
       } else if (data.score < -1000) {
-        text = "🔴 Rouge a l’avantage";
+        parts.push("🔴 Rouge a l’avantage");
       } else {
-        text = "⚖️ Position équilibrée";
+        parts.push("⚖️ Position équilibrée");
       }
     }
 
-    // 💡 CONSEIL COUP
-    if (data.best_col !== null) {
-      text += ` | 💡 Meilleur coup : colonne ${data.best_col + 1}`;
-    }
-
-    this.setPredictionText(text);
-
+    this.setPredictionText(parts.join(" | "));
   } catch (e) {
     this.setPredictionText("Prédiction : indisponible");
   }
 }
-findImmediateWinningMoveLocal(board, player) {
-  const valids = this.validColumns(board);
-
-  for (const col of valids) {
-    const test = this.copyGrid(board);
-    const pos = this.dropToken(test, col, player);
-    if (!pos) continue;
-
-    const cells = this.checkWinCells(test, pos[0], pos[1], player);
-    if (cells && cells.length) {
-      return col;
-    }
-  }
-
-  return null;
-}
-findImmediateBlockingMoveLocal(board, player) {
-  const opp = this.other(player);
-  return this.findImmediateWinningMoveLocal(board, opp);
-}
-resetPredictionDisplay() {
-  if (!this.el.predictionText) return;
-  this.predictionReqId++;
-  this._lastPredictionText = "Prédiction : ...";
-  this.setPredictionText("Prédiction : ...");
-}
-async onlinePlay(col) {
-    if (!this.online.enabled || !this.online.code || !this.online.token) return;
-    if (this.online.moveInFlight) return;
-
-    this.online.moveInFlight = true;
-    try {
-      await this.apiFetch(`/online/${this.online.code}/move`, {
-        method: "POST",
-        body: JSON.stringify({
-          player_secret: this.online.secret,
-          col,
-        }),
-      });
-    } finally {
-      this.online.moveInFlight = false;
-    }
-  }
 
   async onlineRematchFlow() {
     if (!this.online.enabled || !this.online.code) return;
