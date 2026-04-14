@@ -2,10 +2,15 @@ import os
 import sys
 import json
 import secrets
+import base64
+import io
 import re as _re
 import urllib.request as _req2
 from datetime import datetime, timezone
 from typing import Optional, List
+
+import numpy as np
+from PIL import Image
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -27,6 +32,8 @@ load_dotenv(os.path.join(BASE_DIR, ".env"))
 from ia_engine import (
     best_move,
     predict_outcome,
+    analyze_position,
+    explain_move,
     check_win_cells,
     EMPTY,
     RED,
@@ -157,6 +164,103 @@ class PredictReq(BaseModel):
     depth: int = 8
 
 
+class ImageAnalyzeReq(BaseModel):
+    image_data: str
+    rows: int = 9
+    cols: int = 9
+    player: Optional[str] = None
+    depth: int = 8
+
+
+def _decode_data_url(data_url: str) -> Image.Image:
+    if not data_url or "," not in data_url:
+        raise HTTPException(400, "image_data invalide")
+    try:
+        _, encoded = data_url.split(",", 1)
+        raw = base64.b64decode(encoded)
+        img = Image.open(io.BytesIO(raw)).convert("RGB")
+        return img
+    except Exception as e:
+        raise HTTPException(400, f"Impossible de lire l'image: {e}")
+
+
+def _classify_token(rgb: np.ndarray) -> str:
+    r, g, b = [float(x) for x in rgb]
+    if r > 135 and r > g + 35 and r > b + 20:
+        return RED
+    if r > 140 and g > 110 and b < 150 and (r + g) > 320:
+        return YELLOW
+    return EMPTY
+
+
+def _infer_board_from_image(img: Image.Image, rows: int, cols: int) -> list:
+    arr = np.asarray(img, dtype=np.float32)
+    h, w = arr.shape[:2]
+    side = min(h, w)
+    y0 = (h - side) // 2
+    x0 = (w - side) // 2
+    crop = arr[y0 : y0 + side, x0 : x0 + side]
+
+    cell_h = side / rows
+    cell_w = side / cols
+    board = [[EMPTY for _ in range(cols)] for _ in range(rows)]
+
+    for r in range(rows):
+        for c in range(cols):
+            cy = int((r + 0.5) * cell_h)
+            cx = int((c + 0.5) * cell_w)
+            rad_y = max(2, int(cell_h * 0.22))
+            rad_x = max(2, int(cell_w * 0.22))
+            y1 = max(0, cy - rad_y)
+            y2 = min(side, cy + rad_y)
+            x1 = max(0, cx - rad_x)
+            x2 = min(side, cx + rad_x)
+            patch = crop[y1:y2, x1:x2]
+            rgb = patch.mean(axis=(0, 1))
+            board[r][c] = _classify_token(rgb)
+
+    return board
+
+
+def _infer_player_from_board(board: list) -> str:
+    red = sum(cell == RED for row in board for cell in row)
+    yellow = sum(cell == YELLOW for row in board for cell in row)
+    return RED if red <= yellow else YELLOW
+
+
+def _build_analysis_payload(board: list, player: str, depth: int) -> dict:
+    out = analyze_position(
+        board, player, depth=max(1, min(12, depth)), time_limit_ms=1800
+    )
+    pred = out["prediction"]
+    return {
+        "board": board,
+        "player": player,
+        "prediction": {
+            "winner": pred.get("winner"),
+            "moves": pred.get("moves"),
+            "score": pred.get("score"),
+            "depth_reached": pred.get("depth_reached"),
+            "best_col": pred.get("best_col"),
+            "source": pred.get("source"),
+            "exact": pred.get("exact", False),
+            "state": out.get("position_state"),
+            "label": out.get("position_label"),
+        },
+        "best_move": {
+            "col": out.get("best_col"),
+            "score": out.get("best_score"),
+            "reason": out.get("best_move_reason"),
+            "human_label": (
+                None
+                if out.get("best_col") is None
+                else f"Colonne {out['best_col'] + 1}"
+            ),
+        },
+        "columns": out.get("columns", []),
+    }
+
+
 @app.post("/api/ai/move")
 def ai_move(req: AIMoveReq):
     player = req.player if req.player in (RED, YELLOW) else RED
@@ -178,14 +282,8 @@ def ai_move(req: AIMoveReq):
 def api_predict(req: PredictReq):
     player = req.player if req.player in (RED, YELLOW) else RED
     depth = max(1, min(12, req.depth))
-
-    pred = predict_outcome(
-        req.board,
-        player,
-        depth=depth,
-        time_limit_ms=1800,
-    )
-
+    payload = _build_analysis_payload(req.board, player, depth)
+    pred = payload["prediction"]
     return {
         "winner": pred.get("winner"),
         "moves": pred.get("moves"),
@@ -194,9 +292,37 @@ def api_predict(req: PredictReq):
         "depth_reached": pred.get("depth_reached"),
         "source": pred.get("source"),
         "exact": pred.get("exact", False),
+        "state": pred.get("state"),
+        "label": pred.get("label"),
         "player": player,
         "depth": depth,
     }
+
+
+@app.post("/api/analyze")
+def api_analyze(req: PredictReq):
+    player = req.player if req.player in (RED, YELLOW) else RED
+    depth = max(1, min(12, req.depth))
+    return _build_analysis_payload(req.board, player, depth)
+
+
+@app.post("/api/image/analyze")
+def api_image_analyze(req: ImageAnalyzeReq):
+    rows = max(4, min(20, req.rows))
+    cols = max(4, min(20, req.cols))
+    img = _decode_data_url(req.image_data)
+    board = _infer_board_from_image(img, rows, cols)
+    player = (
+        req.player if req.player in (RED, YELLOW) else _infer_player_from_board(board)
+    )
+    payload = _build_analysis_payload(board, player, req.depth)
+    payload["image_reading"] = {
+        "rows": rows,
+        "cols": cols,
+        "method": "center_sampling",
+        "note": "Fonctionne surtout avec une capture propre et bien cadrée du plateau.",
+    }
+    return payload
 
 
 @app.get("/api/predict")

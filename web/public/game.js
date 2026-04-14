@@ -534,6 +534,75 @@ class Connect4Web {
     }
   }
 
+  async onlineJoinFlow(codeValue = "") {
+    if (this.online.joinInFlight) return;
+    this.online.joinInFlight = true;
+    if (this.el.onlineJoin) this.el.onlineJoin.disabled = true;
+
+    try {
+      const code = String(codeValue || this.el.onlineCode?.value || "").trim().toUpperCase();
+      if (!code) throw new Error("Code manquant");
+
+      const out = await this.apiFetch("/online/join", {
+        method: "POST",
+        body: JSON.stringify({
+          code,
+          player_name: this.getOnlineName(),
+        }),
+      });
+
+      this.onlineSaveSession(out.code, out.player_secret, out.your_token);
+      if (this.el.onlineCode) this.el.onlineCode.value = out.code;
+
+      this.online.autoSavedFinishedGame = false;
+      this.setOnlineEnabled(true);
+      this.setOnlineBadge(`Online #${out.code} (${out.your_token})`);
+
+      this.resetLocalBoardOnly();
+      this.onlineStartPolling();
+      this.cleanJoinUrl();
+    } finally {
+      this.online.joinInFlight = false;
+      if (this.el.onlineJoin) this.el.onlineJoin.disabled = false;
+    }
+  }
+
+  onlineLeaveFlow() {
+    this.onlineStopPolling();
+    this.setOnlineEnabled(false);
+    this.onlineClearSession();
+    this.setOnlineBadge("Offline");
+    this.updateSpectatorsInfo(0);
+    this.cleanJoinUrl();
+    this.resetGame(false);
+  }
+
+  async onlinePlay(col) {
+    if (!this.online.enabled || !this.online.code || !this.online.secret) return;
+    if (this.online.moveInFlight) return;
+
+    this.online.moveInFlight = true;
+    this.setButtonsState(false);
+
+    try {
+      await this.apiFetch(`/online/${this.online.code}/move`, {
+        method: "POST",
+        body: JSON.stringify({
+          player_secret: this.online.secret,
+          col,
+        }),
+      });
+
+      const st = await this.apiFetch(`/online/${this.online.code}/state`, {
+        method: "GET",
+      });
+      this.applyOnlineState(st);
+    } finally {
+      this.online.moveInFlight = false;
+      this.setButtonsState(true);
+    }
+  }
+
   normalizePredictionWinner(value) {
     if (value === this.RED || value === "R" || value === "red" || value === "RED") {
       return this.RED;
@@ -554,64 +623,115 @@ class Connect4Web {
     return undefined;
   }
 
-async updatePrediction() {
-  if (!this.el.predictionText) return;
-
-  if (!this.board) {
-    this.setPredictionText("Prédiction : —");
-    return;
+  setPredictionText(text) {
+    if (!this.el.predictionText) return;
+    this.el.predictionText.textContent = text || "Prédiction : ...";
   }
 
-  const reqId = ++this.predictionReqId;
-  const depth = this.clampInt(this.el.depth?.value, 1, 16, 8);
+  async updatePrediction() {
+    if (!this.el.predictionText) return;
 
-  try {
-    const result = await this.apiFetch("/predict", {
-      method: "POST",
-      body: JSON.stringify({
-        board: this.board,
-        player: this.current,
-        depth,
-      }),
-    });
-
-    if (reqId !== this.predictionReqId) return;
-
-    const winner = this.normalizePredictionWinner(result?.winner);
-    const moves = Number.isInteger(result?.moves)
-      ? result.moves
-      : parseInt(result?.moves, 10);
-
-    const score = typeof result?.score === "number"
-      ? Math.trunc(result.score)
-      : parseInt(result?.score, 10);
-
-    let txt = "";
-
-    if (winner === null) {
-      txt = `Prédiction : position équilibrée${
-        Number.isFinite(score) ? ` (score ${score})` : ""
-      }`;
-    } else {
-      const name = winner === this.RED ? "Rouge" : "Jaune";
-
-      if (Number.isInteger(moves)) {
-        txt = `Prédiction : ${name} gagne dans ${moves} demi-coup(s)${
-          Number.isFinite(score) ? ` (score ${score})` : ""
-        }`;
-      } else {
-        txt = `Prédiction : ${name} a l’avantage${
-          Number.isFinite(score) ? ` (score ${score})` : ""
-        }`;
-      }
+    if (!this.board) {
+      this.setPredictionText("Prédiction : —");
+      return;
     }
 
-    this.setPredictionText(txt);
-  } catch (e) {
-    if (reqId !== this.predictionReqId) return;
-    this.setPredictionText(`Prédiction : erreur (${e?.message || e})`);
+    if (this.gameOver) {
+      if (this.winner === this.RED) {
+        this.setPredictionText("Prédiction : Rouge a gagné");
+      } else if (this.winner === this.YELLOW) {
+        this.setPredictionText("Prédiction : Jaune a gagné");
+      } else {
+        this.setPredictionText("Prédiction : match nul");
+      }
+      return;
+    }
+
+    const reqId = ++this.predictionReqId;
+    const depth = this.clampInt(this.el.depth?.value, 1, 16, 8);
+
+    try {
+      const result = await this.apiFetch("/predict", {
+        method: "POST",
+        body: JSON.stringify({
+          board: this.board,
+          player: this.current,
+          depth,
+        }),
+      });
+
+      if (reqId !== this.predictionReqId) return;
+
+      const winner = this.normalizePredictionWinner(result?.winner);
+      const moves = Number.isInteger(result?.moves)
+        ? result.moves
+        : parseInt(result?.moves, 10);
+
+      const score = typeof result?.score === "number"
+        ? Math.trunc(result.score)
+        : parseInt(result?.score, 10);
+
+      const bestCol = Number.isInteger(result?.best_col)
+        ? result.best_col
+        : parseInt(result?.best_col, 10);
+
+      const state = String(result?.state || "").toLowerCase();
+      const label = String(result?.label || "").trim();
+
+      const currentName = this.current === this.RED ? "Rouge" : "Jaune";
+      const oppName = this.current === this.RED ? "Jaune" : "Rouge";
+      const bestColTxt = Number.isInteger(bestCol) ? ` | meilleur coup : colonne ${bestCol + 1}` : "";
+
+      let txt = "";
+
+      if (state === "win") {
+        txt = `Prédiction : victoire pour ${currentName}`;
+        if (Number.isInteger(moves)) txt += ` dans ${moves} demi-coup(s)`;
+        txt += bestColTxt;
+      } else if (state === "loss") {
+        txt = `Prédiction : défaite pour ${currentName}`;
+        if (Number.isInteger(moves)) txt += ` dans ${moves} demi-coup(s)`;
+        txt += bestColTxt;
+      } else if (state === "draw") {
+        txt = `Prédiction : nul probable${bestColTxt}`;
+      } else if (state === "uncertain") {
+        if (winner === this.current) {
+          txt = `Prédiction : avantage ${currentName}`;
+          if (Number.isInteger(moves)) txt += `, victoire possible dans ${moves} demi-coup(s)`;
+          txt += bestColTxt;
+        } else if (winner === this.other(this.current)) {
+          txt = `Prédiction : avantage ${oppName}`;
+          if (Number.isInteger(moves)) txt += `, ${currentName} peut perdre dans ${moves} demi-coup(s)`;
+          txt += bestColTxt;
+        } else {
+          txt = `Prédiction : issue incertaine${bestColTxt}`;
+        }
+      } else if (label) {
+        txt = `Prédiction : ${label}${bestColTxt}`;
+      } else if (winner === null) {
+        txt = `Prédiction : position équilibrée${
+          Number.isFinite(score) ? ` (score ${score})` : ""
+        }${bestColTxt}`;
+      } else if (winner === this.current) {
+        txt = `Prédiction : victoire potentielle pour ${currentName}`;
+        if (Number.isInteger(moves)) {
+          txt += ` dans ${moves} demi-coup(s)`;
+        }
+        txt += `${Number.isFinite(score) ? ` (score ${score})` : ""}${bestColTxt}`;
+      } else {
+        txt = `Prédiction : défaite potentielle pour ${currentName}`;
+        if (Number.isInteger(moves)) {
+          txt += ` dans ${moves} demi-coup(s)`;
+        }
+        txt += `${Number.isFinite(score) ? ` (score ${score})` : ""}${bestColTxt}`;
+      }
+
+      this.setPredictionText(txt);
+    } catch (e) {
+      if (reqId !== this.predictionReqId) return;
+      this.setPredictionText(`Prédiction : erreur (${e?.message || e})`);
+    }
   }
-}
 
   async onlineRematchFlow() {
     if (!this.online.enabled || !this.online.code) return;
@@ -1573,11 +1693,6 @@ async updatePrediction() {
 
     this.el.status.textContent = msg;
     this.updateSidePanel();
-  }
-
-  setPredictionText(text) {
-    if (!this.el.predictionText) return;
-    this.el.predictionText.textContent = text || "Prédiction : ...";
   }
 
   // ===== AI SCORES

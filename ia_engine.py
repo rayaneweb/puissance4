@@ -1340,6 +1340,182 @@ def best_move(
     )
 
 
+# ══════════════════════════════════════════════════════════════
+# ANALYSE POSITION / EXPLICATION
+# ══════════════════════════════════════════════════════════════
+
+
+def _score_to_state(score: int, winner: Optional[str], player: str) -> str:
+    opp = other(player)
+    if winner == player:
+        return "win"
+    if winner == opp:
+        return "loss"
+    if winner is None and abs(score) <= 120:
+        return "draw"
+    return "uncertain"
+
+
+def _score_to_label(score: int, winner: Optional[str], player: str) -> str:
+    state = _score_to_state(score, winner, player)
+    if state == "win":
+        return "victoire"
+    if state == "loss":
+        return "défaite"
+    if state == "draw":
+        return "nul"
+    return "incertaine"
+
+
+def explain_move(
+    board: list, player: str, col: int, depth: int = 10, time_limit_ms: int = 1200
+) -> dict:
+    cols = valid_columns(board)
+    if col not in cols:
+        return {
+            "col": col,
+            "playable": False,
+            "state": "invalid",
+            "label": "invalide",
+            "winner": None,
+            "moves": None,
+            "score": None,
+            "reason": "Colonne non jouable",
+        }
+
+    next_board = copy_grid(board)
+    pos = drop_in_grid(next_board, col, player)
+    if pos and check_win_cells(next_board, pos[0], pos[1], player):
+        return {
+            "col": col,
+            "playable": True,
+            "state": "win",
+            "label": "victoire",
+            "winner": player,
+            "moves": 1,
+            "score": WIN_SCORE - 1,
+            "reason": "Gain immédiat",
+        }
+
+    opp = other(player)
+    pred = predict_outcome(
+        next_board,
+        opp,
+        depth=max(1, depth - 1),
+        time_limit_ms=time_limit_ms,
+    )
+
+    pred_winner = pred.get("winner")
+    pred_score = int(pred.get("score") or 0)
+    pred_moves = pred.get("moves")
+
+    if pred_winner == opp:
+        state = "loss"
+        winner = opp
+        reason = "Ce coup laisse l'adversaire prendre l'avantage"
+    elif pred_winner == player:
+        state = "win"
+        winner = player
+        reason = "Ce coup mène vers une suite gagnante"
+    elif pred_winner is None and abs(pred_score) <= 120:
+        state = "draw"
+        winner = None
+        reason = "Ce coup mène vers une position équilibrée"
+    else:
+        state = "uncertain"
+        winner = pred_winner
+        reason = "Issue encore incertaine"
+
+    return {
+        "col": col,
+        "playable": True,
+        "state": state,
+        "label": _score_to_label(pred_score, winner, player),
+        "winner": winner,
+        "moves": None if pred_moves is None else pred_moves + 1,
+        "score": -pred_score,
+        "reason": reason,
+        "source": pred.get("source"),
+        "exact": pred.get("exact", False),
+    }
+
+
+def analyze_position(
+    board: list, player: str, depth: int = 10, time_limit_ms: int = 1800
+) -> dict:
+    cols = valid_columns(board)
+    if not cols:
+        return {
+            "position_state": "draw",
+            "position_label": "nul",
+            "prediction": {
+                "winner": None,
+                "moves": 0,
+                "score": 0,
+                "depth_reached": 0,
+                "best_col": None,
+                "source": "no_moves",
+                "exact": True,
+            },
+            "best_col": None,
+            "best_score": 0,
+            "best_move_reason": "Aucun coup légal",
+            "columns": [],
+        }
+
+    pred = predict_outcome(
+        board,
+        player,
+        depth=depth,
+        time_limit_ms=time_limit_ms,
+    )
+
+    best = best_move(
+        board,
+        player,
+        depth=max(1, min(depth, 16)),
+        ai_mode="minimax",
+        time_limit_ms=time_limit_ms,
+    )
+    best_col = best.get("col")
+    best_score = (
+        int((best.get("scores") or {}).get(best_col, pred.get("score") or 0))
+        if best_col is not None
+        else int(pred.get("score") or 0)
+    )
+
+    columns = []
+    per_col_budget = max(250, min(900, time_limit_ms // max(1, len(cols))))
+    for col in cols:
+        info = explain_move(
+            board,
+            player,
+            col,
+            depth=max(2, min(depth, 12)),
+            time_limit_ms=per_col_budget,
+        )
+        columns.append(info)
+
+    reason = "Coup recommandé par l'IA"
+    best_info = next((x for x in columns if x.get("col") == best_col), None)
+    if best_info and best_info.get("reason"):
+        reason = best_info["reason"]
+
+    return {
+        "position_state": _score_to_state(
+            int(pred.get("score") or 0), pred.get("winner"), player
+        ),
+        "position_label": _score_to_label(
+            int(pred.get("score") or 0), pred.get("winner"), player
+        ),
+        "prediction": pred,
+        "best_col": best_col,
+        "best_score": best_score,
+        "best_move_reason": reason,
+        "columns": columns,
+    }
+
+
 def reload_model():
     global _cached_model, _cached_scaler, _cached_opening_book, _tt
     _cached_model = None
