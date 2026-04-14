@@ -19,6 +19,9 @@ class Connect4Web {
   LS_ONLINE_TOKEN = "c4_online_token";
   LS_ONLINE_NAME = "c4_online_name";
   LS_STARTING_COLOR = "c4_starting_color";
+  LOCAL_DB_NAME = "c4_local_db";
+  LOCAL_DB_VERSION = 1;
+  LOCAL_GAMES_STORE = "saved_games";
   HISTORY_LIMIT = 120;
 
   constructor() {
@@ -61,8 +64,22 @@ class Connect4Web {
     this.lastDrawGeom = null;
     this.hoverCol = null;
     this.predictionReqId = 0;
+    this._minimaxDeadline = null;
+    this._localTT = new Map();
+    this._localHistory = new Map();
+    this._localKillerMoves = Array.from({ length: 64 }, () => [null, null]);
+    this._localZobristTables = new Map();
+    this._localDbPromise = null;
+    this._lastPredictionText = "";
+    this._scoresRenderToken = 0;
+    this._aiActionToken = 0;
     this.paintMode = false;
     this.paintColor = this.EMPTY;
+    this.runtime = {
+      env: this.detectRuntimeEnv(),
+      storage: this.detectRuntimeStorage(),
+      hasDatabase: false,
+    };
 
     this.el = {
       aiMode: document.getElementById("aiMode"),
@@ -82,6 +99,7 @@ class Connect4Web {
       paintColor: document.getElementById("paintColor"),
       paintClear: document.getElementById("paintClear"),
       paintInfo: document.getElementById("paintInfo"),
+      paintResume: document.getElementById("paintResume"),
       onlineCode: document.getElementById("onlineCode"),
       onlineCreate: document.getElementById("onlineCreate"),
       onlineJoin: document.getElementById("onlineJoin"),
@@ -185,6 +203,10 @@ class Connect4Web {
     if (this.el.paintInfo) {
       this.el.paintInfo.hidden = !this.paintMode;
     }
+
+    if (this.el.paintResume) {
+      this.el.paintResume.hidden = !this.paintMode;
+    }
   }
 
   inferCurrentPlayerFromBoard() {
@@ -247,6 +269,29 @@ class Connect4Web {
     this.updatePrediction();
   }
 
+  resumeGameFromPaint() {
+    if (!this.board || this.online.enabled) return;
+
+    this.clearTimers();
+    this.robotThinking = false;
+    this.aiLock = false;
+
+    const win = this.detectWinnerOnBoard();
+    this.winningCells = win.cells;
+    this.winner = win.winner;
+    this.gameOver = !!win.winner || this.isDraw(this.board);
+    if (!win.winner && this.gameOver) this.winner = null;
+
+    if (!this.gameOver) {
+      this.current = this.inferCurrentPlayerFromBoard();
+    }
+
+    this.paintMode = false;
+    this._aiActionToken++;
+    this.updatePaintUI();
+    this.afterStateChange(true);
+  }
+
   clearPaintBoard() {
     if (!this.board || this.online.enabled) return;
 
@@ -278,6 +323,37 @@ class Connect4Web {
     };
   }
 
+  detectRuntimeEnv() {
+    const host = (window.location.hostname || "").toLowerCase();
+    if (window.location.protocol === "file:") return "local";
+    if (host === "127.0.0.1" || host === "localhost") return "local";
+    return "production";
+  }
+
+  detectRuntimeStorage() {
+    return this.detectRuntimeEnv() === "local" ? "indexeddb" : "postgres";
+  }
+
+  async initializeRuntime() {
+    try {
+      const res = await this.apiFetch("/config", { method: "GET" });
+      if (res?.env) this.runtime.env = String(res.env).toLowerCase();
+      if (res?.storage) this.runtime.storage = String(res.storage).toLowerCase();
+      this.runtime.hasDatabase = !!res?.has_database;
+    } catch {
+      this.runtime = {
+        ...this.runtime,
+        env: this.detectRuntimeEnv(),
+        storage: this.detectRuntimeStorage(),
+        hasDatabase: false,
+      };
+    }
+  }
+
+  isLocalPersistence() {
+    return this.runtime.storage === "indexeddb";
+  }
+
   apiBase() {
     const { protocol, hostname, port } = window.location;
 
@@ -293,7 +369,8 @@ class Connect4Web {
   }
 
   async apiFetch(path, opts = {}) {
-    const res = await fetch(`${this.apiBase()}${path}`, {
+    const url = `${this.apiBase()}${path}`;
+    const res = await fetch(url, {
       headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
       ...opts,
     });
@@ -306,6 +383,19 @@ class Connect4Web {
     }
 
     if (!res.ok) {
+      if (res.status === 405 && path === "/ai/move" && (opts.method || "GET").toUpperCase() === "POST") {
+        try {
+          const body = opts.body ? JSON.parse(opts.body) : {};
+          const params = new URLSearchParams({
+            board: JSON.stringify(body.board || []),
+            player: String(body.player || "R"),
+            ai_mode: String(body.ai_mode || "minimax"),
+            depth: String(body.depth || 4),
+          });
+          return await this.apiFetch(`/ai/move?${params.toString()}`, { method: "GET" });
+        } catch {}
+      }
+
       const msg =
         payload?.detail ||
         payload?.error ||
@@ -315,6 +405,25 @@ class Connect4Web {
     }
 
     return payload;
+  }
+
+  async requestAiMove(payload) {
+    const useGet = this.runtime?.env === "production";
+
+    if (useGet) {
+      const params = new URLSearchParams({
+        board: JSON.stringify(payload.board || []),
+        player: String(payload.player || "R"),
+        ai_mode: String(payload.ai_mode || "minimax"),
+        depth: String(payload.depth || 4),
+      });
+      return this.apiFetch(`/ai/move?${params.toString()}`, { method: "GET" });
+    }
+
+    return this.apiFetch("/ai/move", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
   }
 
   cleanJoinUrl() {
@@ -591,97 +700,125 @@ async updatePrediction() {
 
     const winner = this.normalizePredictionWinner(data?.winner);
     const exact = !!data?.exact;
+
     const moves =
       Number.isInteger(data?.moves) ? data.moves : parseInt(data?.moves, 10);
+
     const score =
       typeof data?.score === "number"
         ? Math.trunc(data.score)
         : parseInt(data?.score, 10);
 
-    if (winner === this.RED) {
-      if (Number.isInteger(moves) && moves >= 0) {
-        this.setPredictionText(
-          exact
-            ? `Prédiction : Rouge gagne dans ${moves} coup(s)${
-                Number.isFinite(score) ? ` (score ${score})` : ""
-              }`
-            : `Prédiction : Rouge devrait gagner dans environ ${moves} coup(s)${
-                Number.isFinite(score) ? ` (score ${score})` : ""
-              }`
-        );
-      } else {
-        this.setPredictionText(
-          `Prédiction : avantage Rouge${
-            Number.isFinite(score) ? ` (score ${score})` : ""
-          }`
-        );
-      }
-      return;
+    const bestCol =
+      Number.isInteger(data?.best_col)
+        ? data.best_col
+        : parseInt(data?.best_col, 10);
+
+    const currentName = this.current === this.RED ? "Rouge" : "Jaune";
+    const opponent = this.other(this.current);
+    const opponentName = opponent === this.RED ? "Rouge" : "Jaune";
+
+    const scoreIsFinite = Number.isFinite(score);
+
+    let advantagedPlayer = null;
+    if (scoreIsFinite) {
+      // Dans le backend, le score est du point de vue de "player" = this.current
+      if (score > 0) advantagedPlayer = this.current;
+      else if (score < 0) advantagedPlayer = opponent;
     }
 
-    if (winner === this.YELLOW) {
-      if (Number.isInteger(moves) && moves >= 0) {
-        this.setPredictionText(
-          exact
-            ? `Prédiction : Jaune gagne dans ${moves} coup(s)${
-                Number.isFinite(score) ? ` (score ${score})` : ""
-              }`
-            : `Prédiction : Jaune devrait gagner dans environ ${moves} coup(s)${
-                Number.isFinite(score) ? ` (score ${score})` : ""
-              }`
-        );
-      } else {
-        this.setPredictionText(
-          `Prédiction : avantage Jaune${
-            Number.isFinite(score) ? ` (score ${score})` : ""
-          }`
-        );
-      }
-      return;
+    let positionType = "incertaine";
+    let dangerText = "";
+    let resultText = "";
+    let advantageText = "";
+    let bestMoveText = "";
+    let scoreText = scoreIsFinite ? `score ${score}` : "";
+
+    // 1) Cas victoire / défaite exactes
+    if (winner === this.current && exact) {
+      positionType = "victoire potentielle";
+      resultText = Number.isInteger(moves) && moves >= 0
+        ? `${currentName} gagne dans ${moves} coup(s)`
+        : `${currentName} a une victoire forcée`;
+      dangerText = `${opponentName} est en difficulté`;
+    } else if (winner === opponent && exact) {
+      positionType = "défaite potentielle";
+      resultText = Number.isInteger(moves) && moves >= 0
+        ? `${opponentName} gagne dans ${moves} coup(s)`
+        : `${opponentName} a une victoire forcée`;
+      dangerText = `${currentName} est en difficulté`;
     }
-
-    if (winner === null) {
-      if (Number.isFinite(score)) {
-        const advantagedPlayer =
-          score > 0
-            ? this.current
-            : score < 0
-            ? this.other(this.current)
-            : null;
-
-        if (score > 350) {
-          this.setPredictionText(
-            `Prédiction : avantage ${
-              advantagedPlayer === this.RED ? "Rouge" : "Jaune"
-            } (score ${score})`
-          );
-        } else if (score < -350) {
-          this.setPredictionText(
-            `Prédiction : avantage ${
-              advantagedPlayer === this.RED ? "Rouge" : "Jaune"
-            } (score ${score})`
-          );
+    // 2) Cas avantage probable
+    else if (winner === this.current && !exact) {
+      positionType = "avantage";
+      resultText = Number.isInteger(moves) && moves >= 0
+        ? `${currentName} devrait gagner dans environ ${moves} coup(s)`
+        : `${currentName} a une meilleure position`;
+      dangerText = `${opponentName} est sous pression`;
+    } else if (winner === opponent && !exact) {
+      positionType = "avantage";
+      resultText = Number.isInteger(moves) && moves >= 0
+        ? `${opponentName} devrait gagner dans environ ${moves} coup(s)`
+        : `${opponentName} a une meilleure position`;
+      dangerText = `${currentName} est sous pression`;
+    }
+    // 3) Pas de gagnant annoncé → on se base sur le score
+    else if (winner === null) {
+      if (scoreIsFinite) {
+        if (score >= 350) {
+          positionType = "avantage";
+          resultText = `${currentName} a l'avantage`;
+          dangerText = `${opponentName} est en difficulté`;
+        } else if (score <= -350) {
+          positionType = "avantage";
+          resultText = `${opponentName} a l'avantage`;
+          dangerText = `${currentName} est en difficulté`;
+        } else if (Math.abs(score) <= 120) {
+          positionType = "nul / équilibrée";
+          resultText = "aucun gagnant forcé vu";
+          dangerText = "position équilibrée";
         } else {
-          this.setPredictionText(
-            `Prédiction : position équilibrée${
-              Number.isFinite(score) ? ` (score ${score})` : ""
-            }`
-          );
+          positionType = "incertaine";
+          resultText = "léger avantage, mais rien de forcé";
+          dangerText = "issue encore ouverte";
         }
       } else {
-        this.setPredictionText("Prédiction : position incertaine");
+        positionType = "incertaine";
+        resultText = "analyse insuffisante";
+        dangerText = "issue encore ouverte";
       }
-      return;
+    } else {
+      positionType = "incertaine";
+      resultText = "issue encore ouverte";
     }
 
-    this.setPredictionText("Prédiction : position incertaine");
+    if (advantagedPlayer === this.RED) {
+      advantageText = "avantage Rouge";
+    } else if (advantagedPlayer === this.YELLOW) {
+      advantageText = "avantage Jaune";
+    }
+
+    if (this.isHumanTurn(this.current) && Number.isInteger(bestCol) && bestCol >= 0) {
+      bestMoveText = `Meilleur coup conseillé : colonne ${bestCol + 1}${
+        scoreIsFinite ? `, poids ${score}` : ""
+      }`;
+    }
+
+    const parts = [`Prédiction : ${positionType}`];
+
+    if (advantageText) parts.push(advantageText);
+    if (resultText) parts.push(resultText);
+    if (dangerText) parts.push(dangerText);
+    if (scoreText) parts.push(scoreText);
+    if (bestMoveText) parts.push(bestMoveText);
+
+    this.setPredictionText(parts.join(" | "));
   } catch (e) {
     if (reqId !== this.predictionReqId) return;
     console.error("Erreur /predict :", e);
     this.setPredictionText(`Prédiction : erreur (${e?.message || e})`);
   }
-}
-  async onlinePlay(col) {
+}  async onlinePlay(col) {
     if (!this.online.enabled || !this.online.code || !this.online.token) return;
     if (this.online.moveInFlight) return;
 
@@ -1117,9 +1254,24 @@ async updatePrediction() {
         return;
       }
 
+      const wasPaintMode = this.paintMode;
       this.paintMode = !this.paintMode;
+
+      this.clearTimers();
+      this.robotThinking = false;
+      this.aiLock = false;
+      this._aiActionToken++;
+
       this.updatePaintUI();
+
+      if (wasPaintMode && !this.paintMode) {
+        this.resumeGameFromPaint();
+        return;
+      }
+
       this.drawBoard();
+      this.updateStatus();
+      this.setButtonsState(true);
     });
 
     this.el.paintColor?.addEventListener("change", () => {
@@ -1132,6 +1284,11 @@ async updatePrediction() {
         return;
       }
       this.clearPaintBoard();
+    });
+
+    this.el.paintResume?.addEventListener("click", () => {
+      if (this.online.enabled) return;
+      this.resumeGameFromPaint();
     });
 
     this.el.saveMenu?.addEventListener("change", async () => {
@@ -1653,7 +1810,8 @@ async updatePrediction() {
     }
 
     if (this.paintMode && !this.online.enabled) {
-      msg += " — 🎨 Mode peinture actif";
+      const nextPlayer = this.current === this.RED ? "Rouge" : "Jaune";
+      msg += ` — 🎨 Mode peinture actif • prochain joueur estimé : ${nextPlayer}`;
     }
     if (this.robotThinking) msg += " (IA réfléchit...)";
 
@@ -1663,7 +1821,9 @@ async updatePrediction() {
 
   setPredictionText(text) {
     if (!this.el.predictionText) return;
-    this.el.predictionText.textContent = text || "Prédiction : ...";
+    const t = text || "Prédiction : ...";
+    this.el.predictionText.textContent = t;
+    this._lastPredictionText = t;
   }
 
   // ===== AI SCORES
@@ -1753,7 +1913,43 @@ async updatePrediction() {
     return { over: true, winner: null };
   }
 
+  // Iterative deepening with time limit — returns { col, score }
+  runLocalBestMove(board, player, maxDepth, timeLimitMs = 1500) {
+    const opponent = this.other(player);
+    const deadline = performance.now() + timeLimitMs;
+    this._minimaxDeadline = deadline;
+    let bestResult = null;
+
+    for (let d = 1; d <= maxDepth; d++) {
+      if (performance.now() >= deadline - 30) break;
+      try {
+        const r = this.minimax(
+          this.copyGrid(board), d, -Infinity, Infinity, true, player, opponent
+        );
+        if (r && r.move !== null) bestResult = r;
+      } catch (_e) {
+        break; // timeout thrown from minimax
+      }
+      if (performance.now() >= deadline) break;
+    }
+
+    this._minimaxDeadline = null;
+
+    // depth-1 guaranteed fallback
+    if (!bestResult || bestResult.move === null) {
+      this._minimaxDeadline = null;
+      bestResult = this.minimax(
+        this.copyGrid(board), 1, -Infinity, Infinity, true, player, opponent
+      );
+    }
+    return bestResult;
+  }
+
   minimax(grid, depth, alpha, beta, maximizingPlayer, aiPlayer, humanPlayer) {
+    // Abort if deadline exceeded (used by runLocalBestMove)
+    if (this._minimaxDeadline !== null && performance.now() >= this._minimaxDeadline) {
+      throw { timeout: true };
+    }
     const terminal = this.terminalState(grid);
 
     if (terminal.over) {
@@ -1863,7 +2059,245 @@ async updatePrediction() {
     }
   }
 
+  getLocalZobristTable(rows, cols) {
+    const key = `${rows}x${cols}`;
+    if (this._localZobristTables.has(key)) return this._localZobristTables.get(key);
+
+    let seed = 0x9e3779b97f4a7c15n;
+    const nextRand = () => {
+      seed ^= seed << 13n;
+      seed ^= seed >> 7n;
+      seed ^= seed << 17n;
+      return seed & ((1n << 64n) - 1n);
+    };
+
+    const table = {
+      R: Array.from({ length: rows }, () => Array.from({ length: cols }, () => nextRand())),
+      Y: Array.from({ length: rows }, () => Array.from({ length: cols }, () => nextRand())),
+      turn: { R: nextRand(), Y: nextRand() },
+    };
+    this._localZobristTables.set(key, table);
+    return table;
+  }
+
+  localBoardHash(grid, currentPlayer) {
+    const table = this.getLocalZobristTable(grid.length, grid[0].length);
+    let hash = table.turn[currentPlayer];
+
+    for (let r = 0; r < grid.length; r++) {
+      for (let c = 0; c < grid[0].length; c++) {
+        const token = grid[r][c];
+        if (token === this.RED || token === this.YELLOW) {
+          hash ^= table[token][r][c];
+        }
+      }
+    }
+
+    return hash.toString();
+  }
+
+  findImmediateWinningMove(grid, player) {
+    for (const col of this.validColumns(grid)) {
+      const next = this.copyGrid(grid);
+      const pos = this.dropToken(next, col, player);
+      if (pos && this.checkWinCells(next, pos[0], pos[1], player).length) return col;
+    }
+    return null;
+  }
+
+  countImmediateWins(grid, player) {
+    let count = 0;
+    for (const col of this.validColumns(grid)) {
+      const next = this.copyGrid(grid);
+      const pos = this.dropToken(next, col, player);
+      if (pos && this.checkWinCells(next, pos[0], pos[1], player).length) count++;
+    }
+    return count;
+  }
+
+  givesOpponentImmediateWin(grid, player, col) {
+    const next = this.copyGrid(grid);
+    const pos = this.dropToken(next, col, player);
+    if (!pos) return true;
+    return this.findImmediateWinningMove(next, this.other(player)) !== null;
+  }
+
+  orderLocalMoves(grid, moves, currentPlayer, rootPlayer, ply = 0, ttMove = null) {
+    const opponent = this.other(currentPlayer);
+    const center = Math.floor(this.cols / 2);
+    const immediateBlock = this.findImmediateWinningMove(grid, opponent);
+
+    return moves
+      .map((col) => {
+        let score = (this.cols - Math.abs(col - center)) * 20;
+        if (ttMove === col) score += 2_000_000;
+
+        const killers = this._localKillerMoves[ply] || [];
+        if (killers[0] === col) score += 500_000;
+        else if (killers[1] === col) score += 300_000;
+
+        score += this._localHistory.get(`${currentPlayer}:${col}`) || 0;
+
+        const next = this.copyGrid(grid);
+        const pos = this.dropToken(next, col, currentPlayer);
+        if (!pos) return { col, score: -Infinity };
+
+        if (this.checkWinCells(next, pos[0], pos[1], currentPlayer).length) score += 10_000_000;
+        if (immediateBlock === col) score += 8_000_000;
+        if (this.givesOpponentImmediateWin(grid, currentPlayer, col)) score -= 2_000_000;
+
+        const myThreats = this.countImmediateWins(next, currentPlayer);
+        const oppThreats = this.countImmediateWins(next, opponent);
+        score += myThreats * 120_000;
+        score -= oppThreats * 160_000;
+        score += (currentPlayer === rootPlayer ? 1 : -1) * this.scorePosition(next, rootPlayer) * 0.02;
+
+        return { col, score };
+      })
+      .sort((a, b) => b.score - a.score)
+      .map((entry) => entry.col);
+  }
+
+  recordLocalCutoff(player, col, depth, ply) {
+    const killers = this._localKillerMoves[ply] || [null, null];
+    if (killers[0] !== col) this._localKillerMoves[ply] = [col, killers[0]];
+    const key = `${player}:${col}`;
+    this._localHistory.set(key, (this._localHistory.get(key) || 0) + depth * depth);
+  }
+
+  localNegamax(grid, depth, alpha, beta, currentPlayer, rootPlayer, ply = 0) {
+    if (this._minimaxDeadline !== null && performance.now() >= this._minimaxDeadline) {
+      throw { timeout: true };
+    }
+
+    const terminal = this.terminalState(grid);
+    if (terminal.over) {
+      if (terminal.winner === null) return { score: 0, move: null, distance: 0 };
+      if (terminal.winner === currentPlayer) return { score: 1000000000 - ply, move: null, distance: 0 };
+      return { score: -1000000000 + ply, move: null, distance: 0 };
+    }
+
+    if (depth === 0) {
+      const evalScore = this.scorePosition(grid, rootPlayer);
+      return {
+        score: currentPlayer === rootPlayer ? evalScore : -evalScore,
+        move: null,
+        distance: null,
+      };
+    }
+
+    const alphaOrig = alpha;
+    const betaOrig = beta;
+    const ttKey = `${this.localBoardHash(grid, currentPlayer)}:${depth}:${currentPlayer}`;
+    const ttEntry = this._localTT.get(ttKey);
+    if (ttEntry) {
+      if (ttEntry.flag === "exact") return { score: ttEntry.score, move: ttEntry.move, distance: ttEntry.distance };
+      if (ttEntry.flag === "lower") alpha = Math.max(alpha, ttEntry.score);
+      if (ttEntry.flag === "upper") beta = Math.min(beta, ttEntry.score);
+      if (alpha >= beta) return { score: ttEntry.score, move: ttEntry.move, distance: ttEntry.distance };
+    }
+
+    const moves = this.validColumns(grid);
+    if (!moves.length) return { score: 0, move: null, distance: 0 };
+
+    const orderedMoves = this.orderLocalMoves(grid, moves, currentPlayer, rootPlayer, ply, ttEntry?.move ?? null);
+    const opponent = this.other(currentPlayer);
+    let bestScore = -Infinity;
+    let bestMove = orderedMoves[0] ?? null;
+    let bestDistance = null;
+
+    for (const col of orderedMoves) {
+      const next = this.copyGrid(grid);
+      const pos = this.dropToken(next, col, currentPlayer);
+      if (!pos) continue;
+
+      let score;
+      let distance;
+
+      if (this.checkWinCells(next, pos[0], pos[1], currentPlayer).length) {
+        score = 1000000000 - (ply + 1);
+        distance = 1;
+      } else {
+        const child = this.localNegamax(next, depth - 1, -beta, -alpha, opponent, rootPlayer, ply + 1);
+        score = -child.score;
+        distance = child.distance === null ? null : child.distance + 1;
+      }
+
+      const isBetter =
+        score > bestScore ||
+        (score === bestScore &&
+          ((score > 900000 && (bestDistance === null || (distance !== null && distance < bestDistance))) ||
+            (score < -900000 && (bestDistance === null || (distance !== null && distance > bestDistance)))));
+
+      if (isBetter) {
+        bestScore = score;
+        bestMove = col;
+        bestDistance = distance;
+      }
+
+      alpha = Math.max(alpha, bestScore);
+      if (alpha >= beta) {
+        this.recordLocalCutoff(currentPlayer, col, depth, ply);
+        break;
+      }
+    }
+
+    const flag = bestScore <= alphaOrig ? "upper" : bestScore >= betaOrig ? "lower" : "exact";
+    this._localTT.set(ttKey, { score: bestScore, move: bestMove, distance: bestDistance, flag });
+    return { score: bestScore, move: bestMove, distance: bestDistance };
+  }
+
+  runLocalBestMove(board, player, maxDepth, timeLimitMs = 1500) {
+    const deadline = performance.now() + timeLimitMs;
+    this._minimaxDeadline = deadline;
+    this._localTT = new Map();
+    this._localHistory = new Map();
+    this._localKillerMoves = Array.from({ length: 64 }, () => [null, null]);
+
+    const ordered = this.orderLocalMoves(board, this.validColumns(board), player, player, 0);
+    let bestResult = {
+      move: ordered[0] ?? null,
+      score: 0,
+      distance: null,
+      depthReached: 0,
+      winner: null,
+      mateIn: null,
+    };
+
+    for (let d = 1; d <= maxDepth; d++) {
+      if (performance.now() >= deadline - 20) break;
+      try {
+        const r = this.localNegamax(this.copyGrid(board), d, -Infinity, Infinity, player, player, 0);
+        if (r && r.move !== null) {
+          bestResult = {
+            ...r,
+            depthReached: d,
+            winner: r.score > 900000 ? player : r.score < -900000 ? this.other(player) : null,
+            mateIn: r.distance ?? null,
+          };
+        }
+      } catch (_e) {
+        break;
+      }
+    }
+
+    this._minimaxDeadline = null;
+    return bestResult;
+  }
+
+  minimax(grid, depth, alpha, beta, maximizingPlayer, aiPlayer, humanPlayer) {
+    const currentPlayer = maximizingPlayer ? aiPlayer : humanPlayer;
+    const result = this.localNegamax(grid, depth, alpha, beta, currentPlayer, aiPlayer, 0);
+    return {
+      score: currentPlayer === aiPlayer ? result.score : -result.score,
+      move: result.move,
+      distance: result.distance,
+    };
+  }
+
   renderAiScores() {
+    const renderToken = ++this._scoresRenderToken;
+
     if (this.online.enabled) {
       this.setScoresBlank();
       return;
@@ -1871,7 +2305,12 @@ async updatePrediction() {
 
     const aiMode = (this.el.aiMode?.value || "random").toLowerCase();
 
-    if (aiMode !== "minimax") {
+    if (aiMode !== "minimax" || this.paintMode) {
+      this.setScoresBlank();
+      return;
+    }
+
+    if (!this.isHumanTurn(this.current)) {
       this.setScoresBlank();
       return;
     }
@@ -1890,8 +2329,9 @@ async updatePrediction() {
 
     const colsList = [...Array(this.cols).keys()];
     const step = (i = 0) => {
+      if (renderToken !== this._scoresRenderToken) return;
       if ((this.el.aiMode?.value || "random").toLowerCase() !== "minimax") return;
-      if (this.robotThinking || this.gameOver) return;
+      if (this.robotThinking || this.gameOver || this.paintMode) return;
       if (i >= colsList.length) return;
 
       const col = colsList[i];
@@ -1914,10 +2354,10 @@ async updatePrediction() {
         }
       }
 
-      this.schedule(() => step(i + 1), 30);
+      this.schedule(() => step(i + 1), 0);
     };
 
-    step(0);
+    this.schedule(() => step(0), 0);
   }
 
   // ===== GAME FLOW
@@ -2008,6 +2448,12 @@ async updatePrediction() {
       return;
     }
 
+    if (this.paintMode) {
+      this.aiLock = false;
+      this.robotThinking = false;
+      return;
+    }
+
     if (this.gameOver) {
       this.aiLock = false;
       return;
@@ -2022,22 +2468,26 @@ async updatePrediction() {
     this.updateStatus();
     this.setButtonsState(false);
     this.setScoresBlank();
+    const actionToken = ++this._aiActionToken;
 
     try {
-      const data = await this.apiFetch("/ai/move", {
-        method: "POST",
-        body: JSON.stringify({
-          board: this.board,
-          player: this.current,
-          ai_mode: aiMode,
-          depth: this.clampInt(depth, 1, 8, 4),
-        }),
+      const data = await this.requestAiMove({
+        board: this.board,
+        player: this.current,
+        ai_mode: aiMode,
+        depth: this.clampInt(depth, 1, 8, 4),
       });
 
       const col = Number.isInteger(data?.col) ? data.col : parseInt(data?.col, 10);
 
       this.robotThinking = false;
       this.updateStatus();
+
+      if (actionToken !== this._aiActionToken || this.paintMode || this.gameOver) {
+        this.aiLock = false;
+        this.setButtonsState(true);
+        return;
+      }
 
       if (!Number.isInteger(col)) {
         this.aiLock = false;
@@ -2057,13 +2507,42 @@ async updatePrediction() {
 
       if (!this.isHumanTurn(this.current) && !this.gameOver) {
         this.clearTimers();
-        this.schedule(() => this.robotStep(), 250);
+        this.schedule(() => this.robotStep(), 10);
       } else {
         this.setButtonsState(true);
       }
     } catch (e) {
       console.error(`Erreur IA backend (${aiMode}) :`, e);
       this.robotThinking = false;
+
+      if (actionToken !== this._aiActionToken || this.paintMode || this.gameOver) {
+        this.aiLock = false;
+        this.setButtonsState(true);
+        return;
+      }
+
+      if (aiMode === "minimax" || aiMode === "hybrid" || aiMode === "trained") {
+        console.warn(`Backend indisponible pour "${aiMode}", bascule sur minimax local.`);
+        try {
+          const maxDepth = this.clampInt(depth, 1, 8, 4);
+          const best = this.runLocalBestMove(this.board, this.current, maxDepth, 1500);
+          const col = best?.move;
+          if (Number.isInteger(col) && this.validColumns(this.board).includes(col)) {
+            this.playMove(col, this.current);
+            this.aiLock = false;
+            if (!this.isHumanTurn(this.current) && !this.gameOver) {
+              this.clearTimers();
+              this.schedule(() => this.robotStep(), 10);
+            } else {
+              this.setButtonsState(true);
+            }
+            return;
+          }
+        } catch (localErr) {
+          console.error("Erreur minimax local :", localErr);
+        }
+      }
+
       this.aiLock = false;
       this.updateStatus();
       this.setButtonsState(true);
@@ -2073,6 +2552,12 @@ async updatePrediction() {
 
   async robotStep() {
     if (this.online.enabled) return;
+    if (this.paintMode) {
+      this.robotThinking = false;
+      this.aiLock = false;
+      this.setButtonsState(true);
+      return;
+    }
     if (this.gameOver) return;
     if (this.robotThinking || this.aiLock) return;
     if (this.viewIndex !== this.moves.length) return;
@@ -2104,7 +2589,7 @@ async updatePrediction() {
 
       if (!this.isHumanTurn(this.current) && !this.gameOver) {
         this.clearTimers();
-        this.schedule(() => this.robotStep(), 250);
+        this.schedule(() => this.robotStep(), 10);
       } else {
         this.setButtonsState(true);
       }
@@ -2132,6 +2617,11 @@ async updatePrediction() {
     }
 
     const humanTurn = this.isHumanTurn(this.current);
+
+    if (this.paintMode) {
+      this.setButtonsState(true);
+      return;
+    }
 
     this.setButtonsState(!this.robotThinking && !this.aiLock && humanTurn);
 
@@ -2214,6 +2704,7 @@ async updatePrediction() {
       ai_depth: this.clampInt(this.el.depth?.value, 1, 8, 4),
       player_red: this.getNameForToken(this.RED),
       player_yellow: this.getNameForToken(this.YELLOW),
+      last_prediction: this._lastPredictionText || null,
     };
   }
 
@@ -2325,6 +2816,13 @@ async updatePrediction() {
     }
     if (this.el.depth) this.el.depth.value = String(this.clampInt(data.ai_depth, 1, 8, 4));
 
+    if (typeof data.last_prediction === "string" && data.last_prediction.trim()) {
+      this._lastPredictionText = data.last_prediction.trim();
+      if (this.el.predictionText) {
+        this.el.predictionText.textContent = this._lastPredictionText;
+      }
+    }
+
     if (typeof data.save_name === "string" && data.save_name.trim()) {
       if (this.el.saveName) this.el.saveName.value = data.save_name.trim();
     } else {
@@ -2389,6 +2887,98 @@ async updatePrediction() {
     return 1;
   }
 
+  openLocalDb() {
+    if (this._localDbPromise) return this._localDbPromise;
+
+    this._localDbPromise = new Promise((resolve, reject) => {
+      if (!window.indexedDB) {
+        reject(new Error("IndexedDB indisponible"));
+        return;
+      }
+
+      const req = window.indexedDB.open(this.LOCAL_DB_NAME, this.LOCAL_DB_VERSION);
+
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(this.LOCAL_GAMES_STORE)) {
+          const store = db.createObjectStore(this.LOCAL_GAMES_STORE, { keyPath: "game_id" });
+          store.createIndex("created_at", "created_at", { unique: false });
+          store.createIndex("save_name", "save_name", { unique: false });
+        }
+      };
+
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error || new Error("Ouverture IndexedDB impossible"));
+    });
+
+    return this._localDbPromise;
+  }
+
+  async saveGameLocal(gameData) {
+    const db = await this.openLocalDb();
+    const now = new Date().toISOString();
+    const payload = {
+      ...gameData,
+      game_id: gameData?.game_id || `local-${Date.now()}`,
+      created_at: gameData?.created_at || now,
+      total_moves: Array.isArray(gameData?.moves) ? gameData.moves.length : 0,
+    };
+
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(this.LOCAL_GAMES_STORE, "readwrite");
+      tx.objectStore(this.LOCAL_GAMES_STORE).put(payload);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error("Ecriture IndexedDB impossible"));
+    });
+
+    return { game_id: payload.game_id, storage: "indexeddb" };
+  }
+
+  async listLocalGames() {
+    const db = await this.openLocalDb();
+    const rows = await new Promise((resolve, reject) => {
+      const tx = db.transaction(this.LOCAL_GAMES_STORE, "readonly");
+      const req = tx.objectStore(this.LOCAL_GAMES_STORE).getAll();
+      req.onsuccess = () => resolve(Array.isArray(req.result) ? req.result : []);
+      req.onerror = () => reject(req.error || new Error("Lecture IndexedDB impossible"));
+    });
+
+    return rows
+      .slice()
+      .sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")))
+      .map((g) => ({
+        ...g,
+        total_moves: g?.total_moves ?? (Array.isArray(g?.moves) ? g.moves.length : 0),
+      }));
+  }
+
+  async getLocalGame(gameId) {
+    const db = await this.openLocalDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(this.LOCAL_GAMES_STORE, "readonly");
+      const req = tx.objectStore(this.LOCAL_GAMES_STORE).get(gameId);
+      req.onsuccess = () => {
+        if (!req.result) {
+          reject(new Error("Partie introuvable"));
+          return;
+        }
+        resolve(req.result);
+      };
+      req.onerror = () => reject(req.error || new Error("Lecture IndexedDB impossible"));
+    });
+  }
+
+  async saveGame(gameData) {
+    if (this.isLocalPersistence()) {
+      return this.saveGameLocal(gameData);
+    }
+
+    return this.apiFetch("/games", {
+      method: "POST",
+      body: JSON.stringify(gameData),
+    });
+  }
+
   buildGamePayloadForDB(saveName) {
     const control_red = this.getControlRed();
     const control_yellow = this.getControlYellow();
@@ -2439,12 +3029,10 @@ async updatePrediction() {
     const saveName = this.getSaveNameOrDefault();
     try {
       const payload = this.buildGamePayloadForDB(saveName);
-      const out = await this.apiFetch("/games", {
-        method: "POST",
-        body: JSON.stringify(payload),
-      });
+      const out = await this.saveGame(payload);
       const gid = out?.game_id ?? out?.id ?? "(?)";
-      alert(`✅ Sauvegardé en base !\nID: ${gid}\nNom: ${saveName}`);
+      const target = this.isLocalPersistence() ? "en local" : "en base";
+      alert(`✅ Sauvegardé ${target} !\nID: ${gid}\nNom: ${saveName}`);
 
       this.pushHistory({
         player: "system",
@@ -2467,7 +3055,9 @@ async updatePrediction() {
     }
 
     try {
-      const list = await this.apiFetch("/games", { method: "GET" });
+      const list = this.isLocalPersistence()
+        ? await this.listLocalGames()
+        : await this.apiFetch("/games", { method: "GET" });
 
       if (!Array.isArray(list) || list.length === 0) {
         alert("Base vide (aucune partie).");
@@ -2477,7 +3067,9 @@ async updatePrediction() {
       const pickedId = await this.showDbLoadDialog(list);
       if (!pickedId) return;
 
-      const g = await this.apiFetch(`/games/${pickedId}`, { method: "GET" });
+      const g = this.isLocalPersistence()
+        ? await this.getLocalGame(pickedId)
+        : await this.apiFetch(`/games/${pickedId}`, { method: "GET" });
 
       let moves = g.moves;
       if (typeof moves === "string") {
@@ -2507,7 +3099,8 @@ async updatePrediction() {
       };
 
       this.applyLoadedPayload(payload);
-      alert(`✅ Partie chargée depuis la base !\nID: ${pickedId}\nNom: ${g.save_name || ""}`);
+      const source = this.isLocalPersistence() ? "le stockage local" : "la base";
+      alert(`✅ Partie chargée depuis ${source} !\nID: ${pickedId}\nNom: ${g.save_name || ""}`);
 
       this.pushHistory({
         player: "system",
@@ -2547,7 +3140,9 @@ async updatePrediction() {
       modal.style.fontFamily = "DM Sans, Arial, sans-serif";
 
       const title = document.createElement("div");
-      title.textContent = "Charger une partie depuis la base";
+      title.textContent = this.isLocalPersistence()
+        ? "Charger une partie locale"
+        : "Charger une partie depuis la base";
       title.style.fontSize = "22px";
       title.style.fontWeight = "700";
       title.style.marginBottom = "12px";
@@ -2644,13 +3239,13 @@ async updatePrediction() {
       btnCancel.addEventListener("click", () => close(null));
 
       btnLoad.addEventListener("click", () => {
-        const val = select.value ? parseInt(select.value, 10) : null;
+        const val = select.value || null;
         if (!val) return;
         close(val);
       });
 
       select.addEventListener("dblclick", () => {
-        const val = select.value ? parseInt(select.value, 10) : null;
+        const val = select.value || null;
         if (!val) return;
         close(val);
       });
@@ -2686,5 +3281,6 @@ async updatePrediction() {
 
 window.addEventListener("DOMContentLoaded", () => {
   const app = new Connect4Web();
+  app.initializeRuntime().catch(() => {});
   requestAnimationFrame(() => requestAnimationFrame(() => app.resizeCanvasReliable()));
 });
