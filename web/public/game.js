@@ -725,15 +725,16 @@ async updatePrediction() {
 
     if (this.isHumanTurn(this.current) && !this.online.enabled) {
       try {
-        const moveData = await this.apiFetch("/ai/move", {
-          method: "POST",
-          body: JSON.stringify({
-            board: this.board,
-            player: this.current,
-            ai_mode: "minimax",
-            depth: 6,
-          }),
-        });
+        const params = new URLSearchParams({
+  board: JSON.stringify(this.board),
+  player: this.current,
+  ai_mode: "minimax",
+  depth: 6,
+});
+
+const moveData = await this.apiFetch(`/ai/move?${params.toString()}`, {
+  method: "GET",
+});
 
         bestCol =
           Number.isInteger(moveData?.col) ? moveData.col :
